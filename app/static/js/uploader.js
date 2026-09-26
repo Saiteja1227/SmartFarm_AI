@@ -27,12 +27,56 @@
     if (el) { el.textContent = ''; el.classList.add('d-none'); }
   }
 
-  function setFile(file) {
+  function compressImageIfNeeded(file, maxDimension = 1400, quality = 0.88) {
+    return new Promise((resolve) => {
+      if (file.size <= 2 * 1024 * 1024) {
+        return resolve(file);
+      }
+      const img = new Image();
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        img.onload = () => {
+          let width = img.width;
+          let height = img.height;
+          if (width > maxDimension || height > maxDimension) {
+            if (width > height) {
+              height = Math.round((height * maxDimension) / width);
+              width = maxDimension;
+            } else {
+              width = Math.round((width * maxDimension) / height);
+              height = maxDimension;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob((blob) => {
+            if (blob && blob.size < file.size) {
+              const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.jpg'), { type: 'image/jpeg' });
+              resolve(compressedFile);
+            } else {
+              resolve(file);
+            }
+          }, 'image/jpeg', quality);
+        };
+        img.onerror = () => resolve(file);
+        img.src = e.target.result;
+      };
+      reader.onerror = () => resolve(file);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function setFile(file) {
     clearError();
     if (!file) return;
     if (!ACCEPTED_MIME.includes(file.type)) { showError(t('uploader.err.formats'), 'uploader.err.formats'); return; }
     if (file.size > MAX_BYTES) { showError(t('uploader.err.tooLarge'), 'uploader.err.tooLarge'); return; }
-    _selectedFile = file;
+    
+    const optimizedFile = await compressImageIfNeeded(file);
+    _selectedFile = optimizedFile;
     const reader = new FileReader();
     reader.onload = e => {
       const img = document.getElementById('preview-img');
@@ -40,7 +84,7 @@
       document.getElementById('drop-idle').classList.add('d-none');
       document.getElementById('drop-preview').classList.remove('d-none');
     };
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(optimizedFile);
     document.getElementById('analyze-btn').disabled = false;
   }
 
