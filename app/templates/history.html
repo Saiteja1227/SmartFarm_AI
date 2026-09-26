@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Scan History — SmartFarm AI{% endblock %}
+
+{% block content %}
+<div class="container-xl px-4 py-5">
+
+  <!-- Page header -->
+  <div class="d-flex justify-content-between align-items-end flex-wrap gap-3 mb-5">
+    <div>
+      <p class="sf-overline" data-i18n="history.overline">Archive</p>
+      <h1 class="font-serif display-5 text-primary mt-1" data-i18n="history.title">Scan History</h1>
+      <p class="text-muted mt-2 col-lg-7" data-i18n="history.subtitle">A chronological record of every leaf you've analyzed.</p>
+    </div>
+    <a href="/" class="sf-btn-primary d-flex align-items-center gap-2">
+      <i class="bi bi-leaf" aria-hidden="true"></i>
+      <span data-i18n="history.newScan">New scan</span>
+    </a>
+  </div>
+
+  <!-- Loading skeletons -->
+  <div id="history-loading" class="row g-4">
+    {% for _ in range(6) %}
+    <div class="col-sm-6 col-lg-4">
+      <div class="sf-card skeleton-card" style="height:280px"></div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Empty state -->
+  <div id="history-empty" class="d-none text-center py-5" data-testid="history-empty">
+    <div class="sf-step-icon d-flex align-items-center justify-content-center rounded-1 mx-auto mb-4">
+      <i class="bi bi-leaf text-primary fs-4" aria-hidden="true"></i>
+    </div>
+    <h3 class="font-serif fs-2 text-primary" data-i18n="history.empty.title">No scans yet</h3>
+    <p class="text-muted mt-2" data-i18n="history.empty.text">Run your first leaf analysis to start your archive.</p>
+    <a href="/" class="sf-btn-primary mt-4 d-inline-flex align-items-center gap-2">
+      <span data-i18n="history.empty.cta">Analyze a leaf</span>
+    </a>
+  </div>
+
+  <!-- Scan grid -->
+  <div id="history-grid" class="d-none row g-4" data-testid="history-grid"></div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/pdf.js') }}?v=3.1"></script>
+<script src="{{ url_for('static', filename='js/history.js') }}?v=3.1"></script>
+{% endblock %}

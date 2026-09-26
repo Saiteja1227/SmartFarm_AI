@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block title %}SmartFarm AI — Plant Disease Detection{% endblock %}
+
+{% block content %}
+
+<!-- ── Hero ──────────────────────────────────────────────────────────────── -->
+<section class="sf-hero position-relative overflow-hidden">
+  <div class="sf-hero-bg" aria-hidden="true">
+    <img src="https://images.unsplash.com/photo-1566249099725-1b0ce8da8c32?crop=entropy&cs=srgb&fm=jpg&q=80&w=1800"
+         alt="" class="sf-hero-img hero-leaf-mask" />
+    <div class="sf-hero-overlay"></div>
+  </div>
+  <div class="container-xl px-4 position-relative">
+    <div class="row py-5 py-lg-6">
+      <div class="col-lg-7">
+        <p class="sf-overline text-primary-muted animate-fade-up" data-i18n="hero.tag">SmartFarm AI · Plant Pathology, Pocket-Sized</p>
+        <h1 class="font-serif display-4 display-lg-3 text-primary fw-bold mt-3 animate-fade-up lh-1" data-testid="hero-heading">
+          <span data-i18n="hero.title1">Diagnose plant disease</span><br/>
+          <em class="text-primary-muted" data-i18n="hero.title2">from a single leaf.</em>
+        </h1>
+        <p class="text-body-secondary mt-4 fs-5 lh-base animate-fade-up col-lg-10" data-i18n="hero.subtitle">
+          Upload a photo of a leaf and get an agronomist-style report — predicted disease, confidence, water stress, and step-by-step recommendations.
+        </p>
+        <div class="d-flex flex-wrap gap-3 mt-4 animate-fade-up">
+          <button onclick="document.getElementById('analyzer-section').scrollIntoView({behavior:'smooth'})"
+                  class="sf-btn-primary d-flex align-items-center gap-2"
+                  data-testid="hero-cta">
+            <i class="bi bi-stars" aria-hidden="true"></i>
+            <span data-i18n="hero.cta">Analyze a leaf</span>
+          </button>
+          <a href="#how" class="sf-btn-outline d-flex align-items-center gap-2">
+            <span data-i18n="hero.howCta">How it works</span>
+            <i class="bi bi-arrow-down" aria-hidden="true"></i>
+          </a>
+        </div>
+        <!-- Stats -->
+        <div class="d-flex gap-4 mt-5 pt-4 border-top border-border animate-fade-up">
+          <div><p class="font-mono fs-4 text-primary mb-0">38+</p><p class="small text-muted" data-i18n="hero.stat1">disease classes</p></div>
+          <div><p class="font-mono fs-4 text-primary mb-0">~15s</p><p class="small text-muted" data-i18n="hero.stat2">avg analysis</p></div>
+          <div><p class="font-mono fs-4 text-primary mb-0">PDF</p><p class="small text-muted" data-i18n="hero.stat3">exportable</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── How it works ───────────────────────────────────────────────────────── -->
+<section id="how" class="border-top border-bottom border-border bg-card-subtle">
+  <div class="container-xl px-4 py-5">
+    <div class="row g-4">
+      <div class="col-md-4 d-flex gap-3">
+        <div class="sf-step-icon d-flex align-items-center justify-content-center rounded-1 flex-shrink-0">
+          <i class="bi bi-leaf" aria-hidden="true"></i>
+        </div>
+        <div>
+          <p class="sf-overline" data-i18n="how.step1.overline">Step 01</p>
+          <h3 class="font-serif fs-3 text-primary" data-i18n="how.step1.title">Snap</h3>
+          <p class="small text-muted" data-i18n="how.step1.text">Upload a clear close-up of a single leaf — JPEG, PNG or WEBP.</p>
+        </div>
+      </div>
+      <div class="col-md-4 d-flex gap-3">
+        <div class="sf-step-icon d-flex align-items-center justify-content-center rounded-1 flex-shrink-0">
+          <i class="bi bi-upc-scan" aria-hidden="true"></i>
+        </div>
+        <div>
+          <p class="sf-overline" data-i18n="how.step2.overline">Step 02</p>
+          <h3 class="font-serif fs-3 text-primary" data-i18n="how.step2.title">Scan</h3>
+          <p class="small text-muted" data-i18n="how.step2.text">Our vision model inspects color, texture and shape for disease signatures.</p>
+        </div>
+      </div>
+      <div class="col-md-4 d-flex gap-3">
+        <div class="sf-step-icon d-flex align-items-center justify-content-center rounded-1 flex-shrink-0">
+          <i class="bi bi-file-earmark-text" aria-hidden="true"></i>
+        </div>
+        <div>
+          <p class="sf-overline" data-i18n="how.step3.overline">Step 03</p>
+          <h3 class="font-serif fs-3 text-primary" data-i18n="how.step3.title">Solve</h3>
+          <p class="small text-muted" data-i18n="how.step3.text">Get an agronomist-style report with actions you can take today.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Analyzer ───────────────────────────────────────────────────────────── -->
+<section id="analyzer-section" class="container-xl px-4 py-5 py-lg-6" data-testid="analyzer-section">
+  <div class="mb-5 col-lg-7">
+    <p class="sf-overline" data-i18n="analyzer.overline">Analyzer</p>
+    <h2 class="font-serif display-5 text-primary mt-2" data-i18n="analyzer.title">Upload a leaf. Get a report.</h2>
+    <p class="text-muted mt-3" data-i18n="analyzer.subtitle">Best with a close, well-lit shot of a single leaf.</p>
+  </div>
+
+  <!-- Upload form -->
+  <div class="row g-4" id="uploader-section">
+    <div class="col-md-7">
+      <!-- Drop zone -->
+      <div id="upload-dropzone" data-testid="upload-dropzone"
+           class="sf-dropzone rounded-1 d-flex flex-column align-items-center justify-content-center text-center p-4 cursor-pointer position-relative"
+           onclick="document.getElementById('file-input').click()" role="button" tabindex="0"
+           data-i18n-aria="uploader.dropAria"
+           aria-label="Click or drag and drop to upload leaf image">
+        <input type="file" id="file-input" data-testid="upload-file-input"
+               accept="image/jpeg,image/png,image/webp" class="d-none" />
+
+        <!-- Idle state -->
+        <div id="drop-idle">
+          <div class="sf-upload-icon d-flex align-items-center justify-content-center rounded-1 mx-auto mb-4 leaf-pulse">
+            <i class="bi bi-upload fs-4 text-primary" aria-hidden="true"></i>
+          </div>
+          <p class="font-serif fs-3 text-primary" data-i18n="uploader.dropTitle">Drop a leaf photo here</p>
+          <p class="small text-muted mt-2 col-9 mx-auto" data-i18n="uploader.dropSubtitle">JPEG, PNG or WEBP up to 8MB.</p>
+          <p class="sf-overline mt-4" data-i18n="uploader.orBrowse">or click to browse</p>
+        </div>
+
+        <!-- Preview state (hidden until image selected) -->
+        <div id="drop-preview" class="d-none w-100 h-100 position-relative" style="min-height:360px">
+          <img id="preview-img" data-testid="upload-preview-img"
+               src="" alt="Leaf preview" data-i18n-alt="uploader.previewAlt" class="w-100 h-100 object-fit-cover rounded-1" style="max-height:380px" />
+          <!-- Scan line overlay during analysis -->
+          <div id="scan-overlay" class="d-none position-absolute inset-0 rounded-1 d-flex align-items-center justify-content-center flex-column"
+               style="background:rgba(28,58,39,0.3);backdrop-filter:blur(4px)">
+            <div class="bg-white px-4 py-2 rounded-1 d-flex align-items-center gap-2 shadow-sm">
+              <div class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></div>
+              <span class="small fw-medium text-primary" data-i18n="uploader.analyzingLeaf">Analyzing leaf…</span>
+            </div>
+            <div class="scan-line position-absolute w-100" style="height:2px;background:rgba(140,163,141,0.8)"></div>
+          </div>
+          <!-- Clear button -->
+          <button type="button" id="clear-btn" data-testid="upload-clear-btn"
+                  onclick="clearUpload(event)"
+                  class="sf-clear-btn position-absolute top-0 end-0 m-2 d-flex align-items-center justify-content-center rounded-1"
+                  data-i18n-aria="uploader.clearAria"
+                  aria-label="Remove image">
+            <i class="bi bi-x" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+
+      <p id="upload-error" data-testid="upload-error-msg" class="small text-danger mt-2 d-none"></p>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="col-md-5 d-flex flex-column gap-3">
+      <div class="sf-card p-4">
+        <p class="sf-overline" data-i18n="uploader.step1">Step 1</p>
+        <h3 class="font-serif fs-2 text-primary mb-4" data-i18n="uploader.tellUs">Tell us about your plant</h3>
+        <div class="mb-3">
+          <label for="crop-input" class="form-label small text-body-secondary" data-i18n="uploader.cropLabel">Crop name (optional)</label>
+          <input type="text" id="crop-input" data-testid="crop-name-input"
+                 class="form-control sf-input"
+                 data-i18n-placeholder="uploader.cropPlaceholder"
+                 placeholder="e.g. Tomato, Basil, Pepper" />
+          <small class="text-muted mt-1 d-block" data-i18n="uploader.cropHint">Helps the model contextualize symptoms.</small>
+        </div>
+        <ul class="list-unstyled small text-muted mt-3">
+          <li class="d-flex gap-2 mb-2"><i class="bi bi-image text-accent mt-1" aria-hidden="true"></i><span data-i18n="uploader.tip1">Take photo in daylight, flat against the leaf.</span></li>
+          <li class="d-flex gap-2 mb-2"><i class="bi bi-image text-accent mt-1" aria-hidden="true"></i><span data-i18n="uploader.tip2">Frame a single leaf, fill most of the frame.</span></li>
+          <li class="d-flex gap-2"><i class="bi bi-image text-accent mt-1" aria-hidden="true"></i><span data-i18n="uploader.tip3">Avoid blur, glare, and heavy filters.</span></li>
+        </ul>
+      </div>
+
+      <button id="analyze-btn" data-testid="analyze-btn"
+              onclick="handleAnalyze()"
+              disabled
+              class="sf-btn-primary w-100 d-flex align-items-center justify-content-center gap-2 py-3">
+        <i class="bi bi-stars" aria-hidden="true"></i>
+        <span id="analyze-btn-label" data-i18n="uploader.analyzeBtn">Analyze Leaf</span>
+      </button>
+      <p class="small text-muted text-center" data-i18n="uploader.poweredBy">Powered by Gemini Flash vision · ~10–25s per analysis</p>
+    </div>
+  </div>
+
+  <!-- Report section (hidden until result arrives) -->
+  <div id="report-section" class="d-none mt-5 pt-4 border-top border-border">
+    <div id="report-container" data-testid="report-container"></div>
+  </div>
+</section>
+
+<!-- ── Sample Gallery ─────────────────────────────────────────────────────── -->
+<section class="bg-card-subtle border-top border-border">
+  <div class="container-xl px-4 py-5">
+    <div class="d-flex justify-content-between align-items-end flex-wrap gap-3 mb-4">
+      <div>
+        <p class="sf-overline" data-i18n="gallery.overline">Common Issues</p>
+        <h2 class="font-serif display-6 text-primary mt-1" data-i18n="gallery.title">Know the signs</h2>
+      </div>
+      <p class="small text-muted col-md-4" data-i18n="gallery.subtitle">A quick visual primer of frequent plant ailments urban farmers encounter.</p>
+    </div>
+    <div class="row g-4">
+      <div class="col-sm-6 col-lg-3">
+        <div class="sf-card overflow-hidden h-100 transition-hover">
+          <img src="https://images.unsplash.com/photo-1592841200221-a6898f307baa?w=600&auto=format&fit=crop&q=70" alt="Early Blight" class="w-100" style="height:200px;object-fit:cover" />
+          <div class="p-3">
+            <p class="sf-overline" data-i18n="gallery.c1.crop">Tomato</p>
+            <p class="font-serif fs-4 text-primary" data-i18n="gallery.c1.disease">Early Blight</p>
+            <p class="small text-muted mt-1" data-i18n="gallery.c1.desc">Dark concentric rings on lower leaves</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="sf-card overflow-hidden h-100 transition-hover">
+          <img src="https://images.unsplash.com/photo-1530836369250-ef72a3f5cda8?w=600&auto=format&fit=crop&q=70" alt="Powdery Mildew" class="w-100" style="height:200px;object-fit:cover" />
+          <div class="p-3">
+            <p class="sf-overline" data-i18n="gallery.c2.crop">Cucurbits</p>
+            <p class="font-serif fs-4 text-primary" data-i18n="gallery.c2.disease">Powdery Mildew</p>
+            <p class="small text-muted mt-1" data-i18n="gallery.c2.desc">White powdery patches on leaf surface</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="sf-card overflow-hidden h-100 transition-hover">
+          <img src="https://images.unsplash.com/photo-1467055260638-be0bf63e7350?w=600&auto=format&fit=crop&q=70" alt="Leaf Curl" class="w-100" style="height:200px;object-fit:cover" />
+          <div class="p-3">
+            <p class="sf-overline" data-i18n="gallery.c3.crop">Pepper / Chili</p>
+            <p class="font-serif fs-4 text-primary" data-i18n="gallery.c3.disease">Leaf Curl</p>
+            <p class="small text-muted mt-1" data-i18n="gallery.c3.desc">Upward curling and yellowing margins</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-sm-6 col-lg-3">
+        <div class="sf-card overflow-hidden h-100 transition-hover">
+          <img src="https://images.unsplash.com/photo-1532884114326-1ab4225d2fc2?w=600&auto=format&fit=crop&q=70" alt="Water Stress" class="w-100" style="height:200px;object-fit:cover" />
+          <div class="p-3">
+            <p class="sf-overline" data-i18n="gallery.c4.crop">Any</p>
+            <p class="font-serif fs-4 text-primary" data-i18n="gallery.c4.disease">Water Stress</p>
+            <p class="small text-muted mt-1" data-i18n="gallery.c4.desc">Wilting, dull color, dry leaf tips</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/uploader.js') }}?v=3.1"></script>
+<script src="{{ url_for('static', filename='js/report.js') }}?v=3.1"></script>
+<script src="{{ url_for('static', filename='js/pdf.js') }}?v=3.1"></script>
+{% endblock %}
