@@ -31,7 +31,8 @@ html, body {
 
 h1, h2, h3, h4, h5, h6, .font-serif {
   font-family: 'Cormorant Garamond', 'Noto Serif Devanagari', 'Noto Serif Telugu',
-               'Noto Serif Tamil', 'Noto Serif Bengali', Georgia, serif;
+               'Noto Sans Tamil', 'Noto Sans Bengali', 'Noto Sans Kannada',
+               'Noto Sans Gujarati', Georgia, serif;
   letter-spacing: -0.01em;
 }
 
@@ -289,3 +290,94 @@ h1, h2, h3, h4, h5, h6, .font-serif {
 
 .py-lg-6 { padding-top: 5rem !important; padding-bottom: 5rem !important; }
 @media (max-width: 991px) { .py-lg-6 { padding-top: 3rem !important; padding-bottom: 3rem !important; } }
+
+/* ── Blurry vs Enhanced Image Comparison & Lightbox ──────────────────────── */
+.sf-compare-frame {
+  border: 1px solid var(--sf-border);
+  background: var(--sf-secondary);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.sf-compare-frame:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px -8px rgba(28, 58, 39, 0.25);
+}
+.sf-compare-frame-enhanced {
+  border: 2px solid var(--sf-primary);
+}
+.sf-compare-img {
+  height: 340px;
+  object-fit: contain;
+  background: #0f1a13;
+  display: block;
+}
+.sf-compare-img-enhanced {
+  image-rendering: -webkit-optimize-contrast;
+  filter: contrast(1.03) saturate(1.04);
+}
+.sf-compare-label {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--sf-radius);
+  font-size: 0.78rem;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.sf-compare-label-orig {
+  background: rgba(244, 241, 235, 0.92);
+  color: var(--sf-foreground);
+  border: 1px solid var(--sf-border);
+}
+.sf-compare-label-enh {
+  background: rgba(28, 58, 39, 0.92);
+  color: #fff;
+}
+.sf-compare-zoom {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 0.75rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--sf-radius);
+  font-size: 0.72rem;
+  font-weight: 500;
+  background: rgba(244, 241, 235, 0.9);
+  color: var(--sf-primary);
+  border: 1px solid var(--sf-border);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.sf-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+.sf-lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(18, 32, 22, 0.75);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.sf-lightbox-content {
+  position: relative;
+  z-index: 1;
+  max-width: min(92vw, 960px);
+  width: 100%;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+}
+

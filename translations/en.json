@@ -241,5 +241,38 @@
   "ml.preventive.Quarantine new plants": "Quarantine new plants",
   "ml.preventive.Keep garden area clean": "Keep garden area clean",
   "ml.preventive.Maintain proper plant care practices": "Maintain proper plant care practices",
-  "ml.preventive.Avoid overhead watering to reduce fungal risk": "Avoid overhead watering to reduce fungal risk"
+  "ml.preventive.Avoid overhead watering to reduce fungal risk": "Avoid overhead watering to reduce fungal risk",
+
+  "report.originalImage": "Original Uploaded Image",
+  "report.enhancedImage": "Enhanced Image",
+  "report.blurDetectedBadge": "Blurry Image Enhanced",
+  "report.blurEnhancedDesc": "The uploaded leaf photo appeared blurry, so our computer vision pipeline enhanced edge sharpness and contrast before analysis. Click any image to enlarge.",
+  "report.enhanceFailed": "The uploaded image appeared blurry, and automatic enhancement could not be completed. Analysis was performed on the original image.",
+  "report.clickToEnlarge": "Click to enlarge",
+  "report.closePreview": "Close preview",
+
+  "pdf.originalImage": "Original Uploaded Image",
+  "pdf.enhancedImage": "Enhanced Image",
+  "pdf.imageEnhancedNote": "Blurry image detected — automatically sharpened and contrast-enhanced prior to analysis.",
+
+  "ml.severity.healthy": "Plant appears healthy with {confidence}% confidence. Water stress is {stress}.",
+  "ml.severity.late_blight": "Critical condition ({confidence}% confidence). Late blight spreads rapidly and can destroy entire crops. Water stress is {stress}.",
+  "ml.severity.early_blight": "Moderate severity ({confidence}% confidence). Early blight typically affects lower leaves first. Water stress is {stress}.",
+  "ml.severity.leaf_mold": "Moderate severity ({confidence}% confidence). Leaf mold thrives in high humidity conditions. Water stress is {stress}.",
+  "ml.severity.septoria": "Moderate severity ({confidence}% confidence). Septoria leaf spot can cause significant defoliation. Water stress is {stress}.",
+  "ml.severity.bacterial_spot": "Moderate to high severity ({confidence}% confidence). Bacterial spot affects leaves and fruit. Water stress is {stress}.",
+  "ml.severity.unhealthy_unknown": "Plant appears unhealthy ({confidence}% confidence), but specific disease could not be identified with certainty. Water stress is {stress}.",
+  "ml.severity.low_conf": "Low confidence ({confidence}%) in classification. Manual inspection recommended. Water stress appears {stress}.",
+  "ml.severity.unable_analyze": "Unable to complete analysis due to technical error.",
+  "ml.severity.service_limit": "Unable to analyze leaf image{crop} due to service limitations.",
+  "ml.severity.for_crop": " for {crop}",
+
+  "ml.notes.two_stage": "Two-stage analysis: Binary health classification followed by disease identification.{crop_note} Based on visible symptoms only.",
+  "ml.notes.binary": "Binary classification indicates {status} plant ({confidence}% confidence).{crop_note} Based on visible symptoms only.",
+  "ml.notes.crop_context": " Contextualized for {crop}.",
+  "ml.notes.low_conf": "Low confidence ({confidence}%) suggests image quality issues or atypical symptoms. Consider retaking photo in better lighting or consulting an expert.{crop_note}",
+  "ml.notes.tech_error": "A technical error occurred during analysis. Please ensure the image is a clear photo of a plant leaf and try again.",
+  "ml.notes.fallback": "AI analysis service is currently experiencing issues. This is a fallback response. Please try uploading the image again later.",
+  "ml.notes.enhanced": " Blurred input image was automatically enhanced prior to analysis."
 }
+

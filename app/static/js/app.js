@@ -64,6 +64,11 @@
       const nameKeywords = {
         hi: ['hindi', 'हिन्दी', 'devanagari'],
         te: ['telugu', 'తెలుగు'],
+        ta: ['tamil', 'தமிழ்'],
+        bn: ['bengali', 'bangla', 'বাংলা'],
+        mr: ['marathi', 'मराठी'],
+        kn: ['kannada', 'ಕನ್ನಡ'],
+        gu: ['gujarati', 'ગુજરાતી'],
         en: ['english', 'en-']
       };
       const keys = nameKeywords[prefix] || [];

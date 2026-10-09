@@ -36,6 +36,13 @@ def make_scan_doc(
         "preventive_measures": ai_result.get("preventive_measures", []),
         "is_plant_image": ai_result.get("is_plant_image", True),
         "notes": ai_result.get("notes", ""),
+        "is_blurry": bool(ai_result.get("is_blurry", False)),
+        "image_enhanced": bool(ai_result.get("image_enhanced", False)),
+        "enhancement_status": ai_result.get("enhancement_status", "not_needed"),
+        "blur_score": ai_result.get("blur_score"),
+        "enhanced_blur_score": ai_result.get("enhanced_blur_score"),
+        "enhanced_image_base64": ai_result.get("enhanced_image_base64"),
+        "enhanced_image_mime": ai_result.get("enhanced_image_mime") or "image/jpeg",
         "created_at": _utcnow_iso(),
     }
 

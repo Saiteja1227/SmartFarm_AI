@@ -1,11 +1,21 @@
 /**
  * SmartFarm AI — Result report renderer
  * Builds the bento-grid HTML for a scan report and injects it into #report-container.
+ * Supports side-by-side Original vs. Enhanced image comparison when a blurry leaf image was enhanced.
  */
 (function (window) {
   'use strict';
 
-  const BCP47_MAP = { en:'en-US', hi:'hi-IN', te:'te-IN', ta:'ta-IN', bn:'bn-IN', mr:'mr-IN', kn:'kn-IN', gu:'gu-IN' };
+  const BCP47_MAP = {
+    en: 'en-US',
+    hi: 'hi-IN',
+    te: 'te-IN',
+    ta: 'ta-IN',
+    bn: 'bn-IN',
+    mr: 'mr-IN',
+    kn: 'kn-IN',
+    gu: 'gu-IN'
+  };
 
   function stressBars(level) {
     const order = ['Low', 'Moderate', 'High', 'Critical'];
@@ -43,6 +53,59 @@
       </li>`).join('');
   }
 
+  // ── Lightbox Modal for Image Inspection ────────────────────────────────────
+  function ensureLightboxModal() {
+    let modal = document.getElementById('sf-image-lightbox');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'sf-image-lightbox';
+    modal.className = 'sf-lightbox d-none';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('data-testid', 'image-lightbox-modal');
+    modal.innerHTML = `
+      <div class="sf-lightbox-backdrop" onclick="closeImageLightbox()"></div>
+      <div class="sf-lightbox-content sf-card p-3">
+        <div class="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom border-border">
+          <span id="sf-lightbox-title" class="fw-medium text-primary small"></span>
+          <button type="button" class="sf-clear-btn rounded-1 d-flex align-items-center justify-content-center"
+                  onclick="closeImageLightbox()" id="sf-lightbox-close" aria-label="Close preview">
+            <i class="bi bi-x-lg" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="text-center">
+          <img id="sf-lightbox-img" src="" alt="" class="img-fluid rounded-1" style="max-height:78vh;object-fit:contain" />
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') window.closeImageLightbox();
+    });
+    return modal;
+  }
+
+  window.openImageLightbox = function (src, title) {
+    if (!src) return;
+    const t = window.i18n ? window.i18n.t : k => k;
+    const modal = ensureLightboxModal();
+    const imgEl = document.getElementById('sf-lightbox-img');
+    const titleEl = document.getElementById('sf-lightbox-title');
+    const closeBtn = document.getElementById('sf-lightbox-close');
+    if (imgEl) {
+      imgEl.src = src;
+      imgEl.alt = title || t('report.leafImgAlt');
+    }
+    if (titleEl) titleEl.textContent = title || t('report.leafImgAlt');
+    if (closeBtn) closeBtn.setAttribute('aria-label', t('report.closePreview'));
+    modal.classList.remove('d-none');
+  };
+
+  window.closeImageLightbox = function () {
+    const modal = document.getElementById('sf-image-lightbox');
+    if (modal) modal.classList.add('d-none');
+  };
+
   function renderReport(rawReport, containerId, onNewScan) {
     if (!rawReport) return;
     const t = window.i18n ? window.i18n.t : k => k;
@@ -62,6 +125,15 @@
       ? `data:${report.image_mime || 'image/jpeg'};base64,${report.image_base64}`
       : null;
 
+    const isEnhanced = Boolean(report.image_enhanced && report.enhanced_image_base64);
+    const enhanceFailed = Boolean(report.is_blurry && report.enhancement_status === 'failed');
+    const enhancedImgSrc = isEnhanced
+      ? `data:${report.enhanced_image_mime || 'image/jpeg'};base64,${report.enhanced_image_base64}`
+      : null;
+
+    window._lastOrigImgSrc = imgSrc;
+    window._lastEnhancedImgSrc = enhancedImgSrc;
+
     const speechSupported = window.sfApp ? window.sfApp.isSpeechSupported() : false;
 
     const notPlantWarning = !report.is_plant_image ? `
@@ -69,6 +141,76 @@
         <i class="bi bi-exclamation-triangle text-warning mt-1" aria-hidden="true"></i>
         <p class="mb-0 small">${t('report.notPlant')}</p>
       </div>` : '';
+
+    const enhanceFailedWarning = enhanceFailed ? `
+      <div data-testid="enhance-failed-banner" class="alert d-flex align-items-start gap-2 mb-4 rounded-1" style="background:color-mix(in srgb,var(--sf-warning) 12%,transparent);border:1px solid color-mix(in srgb,var(--sf-warning) 35%,transparent)">
+        <i class="bi bi-exclamation-circle text-warning mt-1" aria-hidden="true"></i>
+        <p class="mb-0 small">${t('report.enhanceFailed')}</p>
+      </div>` : '';
+
+    // Side-by-side comparison card when blurry image was enhanced, or single image card when sharp
+    let imageSectionHtml = '';
+    if (isEnhanced && imgSrc && enhancedImgSrc) {
+      imageSectionHtml = `
+        <div class="sf-card p-4" style="grid-column:1/-1" data-testid="enhanced-image-comparison">
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+            <div>
+              <span class="sf-badge sf-badge-healthy mb-2" data-testid="blur-enhanced-badge">
+                <i class="bi bi-magic" aria-hidden="true"></i>
+                <span>${t('report.blurDetectedBadge')}</span>
+              </span>
+              <p class="small text-muted mb-0" data-testid="blur-enhanced-desc">${t('report.blurEnhancedDesc')}</p>
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6" data-testid="original-image-col">
+              <div class="sf-compare-frame position-relative rounded-1 overflow-hidden cursor-pointer"
+                   onclick="openImageLightbox(window._lastOrigImgSrc, window.i18n ? window.i18n.t('report.originalImage') : 'Original Uploaded Image')">
+                <span class="sf-compare-label sf-compare-label-orig" data-testid="original-image-label">
+                  <i class="bi bi-image" aria-hidden="true"></i>
+                  <span>${t('report.originalImage')}</span>
+                </span>
+                <span class="sf-compare-zoom">
+                  <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
+                  <span class="d-none d-sm-inline">${t('report.clickToEnlarge')}</span>
+                </span>
+                <img src="${imgSrc}" alt="${t('report.originalImage')}"
+                     data-testid="original-uploaded-image"
+                     class="w-100 sf-compare-img" />
+              </div>
+            </div>
+            <div class="col-md-6" data-testid="enhanced-image-col">
+              <div class="sf-compare-frame sf-compare-frame-enhanced position-relative rounded-1 overflow-hidden cursor-pointer"
+                   onclick="openImageLightbox(window._lastEnhancedImgSrc, window.i18n ? window.i18n.t('report.enhancedImage') : 'Enhanced Image')">
+                <span class="sf-compare-label sf-compare-label-enh" data-testid="enhanced-image-label">
+                  <i class="bi bi-stars" aria-hidden="true"></i>
+                  <span>${t('report.enhancedImage')}</span>
+                </span>
+                <span class="sf-compare-zoom">
+                  <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
+                  <span class="d-none d-sm-inline">${t('report.clickToEnlarge')}</span>
+                </span>
+                <img src="${enhancedImgSrc}" alt="${t('report.enhancedImage')}"
+                     data-testid="enhanced-image"
+                     class="w-100 sf-compare-img sf-compare-img-enhanced" />
+              </div>
+            </div>
+          </div>
+        </div>`;
+    } else if (imgSrc) {
+      imageSectionHtml = `
+        <div class="sf-card overflow-hidden sf-report-img position-relative cursor-pointer"
+             data-testid="single-uploaded-image-card"
+             onclick="openImageLightbox(window._lastOrigImgSrc, window.i18n ? window.i18n.t('report.originalImage') : 'Original Uploaded Image')">
+          <span class="sf-compare-zoom">
+            <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
+            <span class="d-none d-sm-inline">${t('report.clickToEnlarge')}</span>
+          </span>
+          <img src="${imgSrc}" alt="${t('report.leafImgAlt')}"
+               data-testid="original-uploaded-image"
+               class="w-100 h-100 object-fit-cover" style="max-height:400px" />
+        </div>`;
+    }
 
     container.innerHTML = `
       <div data-testid="report-container" class="animate-fade-up">
@@ -87,7 +229,7 @@
               <i class="bi bi-volume-up" id="speak-icon" aria-hidden="true"></i>
               <span id="speak-label">${t('report.speak')}</span>
             </button>` : ''}
-            <button onclick="downloadReportPdf(window._currentReport)"
+            <button onclick="downloadReportPdf(window._currentRawReport || window._currentReport)"
                     data-testid="download-pdf-btn"
                     class="sf-btn-outline d-flex align-items-center gap-2">
               <i class="bi bi-download" aria-hidden="true"></i>
@@ -109,14 +251,12 @@
         </div>
 
         ${notPlantWarning}
+        ${enhanceFailedWarning}
 
         <!-- Bento grid -->
         <div class="sf-report-bento">
 
-          ${imgSrc ? `
-          <div class="sf-card overflow-hidden sf-report-img">
-            <img src="${imgSrc}" alt="${t('report.leafImgAlt')}" class="w-100 h-100 object-fit-cover" style="max-height:400px" />
-          </div>` : ''}
+          ${imageSectionHtml}
 
           <!-- Health status -->
           <div class="sf-card p-4">

@@ -3,10 +3,247 @@ import os
 import logging
 import base64
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import io
 
+try:
+    import cv2
+except ImportError:  # pragma: no cover
+    cv2 = None
+
 logger = logging.getLogger(__name__)
+
+# Sharpness threshold (variance of discrete 2D Laplacian on scale-normalized grayscale).
+# Images below this threshold are detected as blurry and enhanced before analysis.
+BLUR_SHARPNESS_THRESHOLD = 115.0
+
+
+def _laplacian_variance(gray_arr: np.ndarray) -> float:
+    """Compute discrete 2D Laplacian variance on a float32 grayscale array."""
+    laplacian = (
+        gray_arr[:-2, 1:-1]
+        + gray_arr[2:, 1:-1]
+        + gray_arr[1:-1, :-2]
+        + gray_arr[1:-1, 2:]
+        - 4.0 * gray_arr[1:-1, 1:-1]
+    )
+    return float(np.var(laplacian))
+
+
+def compute_blur_score(pil_img: Image.Image) -> float:
+    """
+    Compute a multi-scale sharpness score using discrete 2D Laplacian variance.
+    Evaluates sharpness at 256x256 and, for larger images, also checks native/512px
+    scale so high-resolution out-of-focus photos are not masked by downsampling.
+    """
+    gray_pil = pil_img.convert("L")
+    w, h = gray_pil.size
+    g256 = np.asarray(gray_pil.resize((256, 256), Image.Resampling.BILINEAR), dtype=np.float32)
+    s256 = _laplacian_variance(g256)
+    if max(w, h) >= 384:
+        ref_dim = min(max(w, h), 512)
+        g_ref = np.asarray(gray_pil.resize((ref_dim, ref_dim), Image.Resampling.BILINEAR), dtype=np.float32)
+        s_ref = _laplacian_variance(g_ref)
+        return float(min(s256, s_ref * 1.6))
+    return float(s256)
+
+
+def _morph_dilate_erode_blur(arr: np.ndarray, ksize: int, sigma: float):
+    """Compute morphological dilation, erosion, and Gaussian blur using cv2 or PIL+NumPy."""
+    if cv2 is not None:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        raw_max = cv2.dilate(arr, kernel)
+        raw_min = cv2.erode(arr, kernel)
+        local_max = cv2.GaussianBlur(raw_max, (3, 3), sigmaX=0.8)
+        local_min = cv2.GaussianBlur(raw_min, (3, 3), sigmaX=0.8)
+        blur = cv2.GaussianBlur(arr, (0, 0), sigmaX=sigma)
+        return raw_max, raw_min, local_max, local_min, blur
+
+    # Pure PIL + NumPy implementation (for serverless environments without OpenCV)
+    pil_u8 = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+    max_img = pil_u8.filter(ImageFilter.MaxFilter(size=ksize))
+    min_img = pil_u8.filter(ImageFilter.MinFilter(size=ksize))
+    raw_max = np.asarray(max_img, dtype=np.float32)
+    raw_min = np.asarray(min_img, dtype=np.float32)
+    local_max = np.asarray(max_img.filter(ImageFilter.GaussianBlur(radius=0.8)), dtype=np.float32)
+    local_min = np.asarray(min_img.filter(ImageFilter.GaussianBlur(radius=0.8)), dtype=np.float32)
+    blur = np.asarray(pil_u8.filter(ImageFilter.GaussianBlur(radius=sigma)), dtype=np.float32)
+    return raw_max, raw_min, local_max, local_min, blur
+
+
+def _coupled_shock_and_unsharp(
+    work: np.ndarray,
+    ksize: int,
+    sigma: float,
+    shock_alpha: float,
+    unsharp_gain: float,
+    slope: float = 3.4,
+    overshoot_allowance: float = 0.14,
+) -> np.ndarray:
+    """
+    Coupled Luminance-Guided Kramer-Bruckner Shock + Soft-Clamped Unsharp Filter.
+    - Computes the edge transition phase from perceptual luminance so all RGB channels
+      steepen at the exact same sub-pixel boundary without false-color fringes.
+    - Uses Gaussian-smoothed local morphological bounds to ensure smooth circular and
+      diagonal contours with zero staircasing or halo ringing.
+    """
+    raw_max, raw_min, local_max, local_min, _ = _morph_dilate_erode_blur(work, ksize, sigma)
+    local_mid = 0.5 * (local_max + local_min)
+    local_range = np.maximum(local_max - local_min, 1e-3)
+
+    lum = 0.114 * work[:, :, 0] + 0.587 * work[:, :, 1] + 0.299 * work[:, :, 2]
+    _, _, lum_max, lum_min, _ = _morph_dilate_erode_blur(lum, ksize, sigma)
+    lum_mid = 0.5 * (lum_max + lum_min)
+    lum_range = np.maximum(lum_max - lum_min, 1e-3)
+
+    lum_pos = np.clip((lum - lum_mid) / (0.5 * lum_range), -1.0, 1.0)[..., None]
+    ch_pos = np.clip((work - local_mid) / (0.5 * local_range), -1.0, 1.0)
+    lum_weight = np.clip(lum_range / 12.0, 0.0, 1.0)[..., None]
+    norm_pos = lum_weight * lum_pos + (1.0 - lum_weight) * ch_pos
+
+    steep = local_mid + 0.5 * local_range * (np.tanh(slope * norm_pos) / np.tanh(slope))
+    work = (1.0 - shock_alpha) * work + shock_alpha * steep
+
+    if cv2 is not None:
+        blur = cv2.GaussianBlur(work, (0, 0), sigmaX=sigma)
+    else:
+        pil_w = Image.fromarray(np.clip(work, 0, 255).astype(np.uint8))
+        blur = np.asarray(pil_w.filter(ImageFilter.GaussianBlur(radius=sigma)), dtype=np.float32)
+
+    unsharp = work + unsharp_gain * (work - blur)
+
+    # Allow slight ridge peak recovery on low-amplitude thin veins while clamping strong step edges
+    thin_ridge_factor = np.exp(-local_range / 35.0)
+    pad = overshoot_allowance * local_range * thin_ridge_factor
+    return np.clip(unsharp, raw_min - pad, raw_max + pad)
+
+
+def _enhance_leaf_clarity(orig_img: Image.Image) -> Image.Image:
+    """
+    High-clarity deblurring and edge restoration pipeline for blurry leaf images.
+    Uses Coupled Luminance-Guided Shock Filtering + Multi-Scale Soft-Clamped
+    Unsharp Deconvolution + Lanczos-4 HD Super-Resolution.
+    """
+    rgb = np.asarray(orig_img.convert("RGB"), dtype=np.uint8)
+    bgr = rgb[:, :, ::-1].copy()
+    h0, w0 = bgr.shape[:2]
+
+    # Step 1: Edge-preserving pre-denoising at native scale
+    if cv2 is not None:
+        bgr = cv2.bilateralFilter(bgr, d=5, sigmaColor=14, sigmaSpace=14)
+    scale_factor = max(1.0, max(h0, w0) / 480.0)
+    work = bgr.astype(np.float32)
+
+    # Step 2: Multi-scale Coupled Shock + Soft-Clamped Unsharp Deconvolution
+    k1 = int(round(9 * scale_factor)) | 1
+    k2 = int(round(5 * scale_factor)) | 1
+    s1 = 2.8 * scale_factor
+    s2 = 1.4 * scale_factor
+
+    work = _coupled_shock_and_unsharp(
+        work, k1, s1, shock_alpha=0.68, unsharp_gain=1.65, slope=3.4, overshoot_allowance=0.18
+    )
+    work = _coupled_shock_and_unsharp(
+        work, k2, s2, shock_alpha=0.58, unsharp_gain=1.40, slope=3.2, overshoot_allowance=0.12
+    )
+    bgr_deblurred = np.clip(work, 0, 255).astype(np.uint8)
+
+    # Step 3: Lanczos-4 Super-Resolution upscale to at least 900px + fine sub-pixel pass
+    max_dim = max(h0, w0)
+    if max_dim < 900:
+        up_scale = 900.0 / float(max_dim)
+        target_w, target_h = int(round(w0 * up_scale)), int(round(h0 * up_scale))
+        if cv2 is not None:
+            bgr_deblurred = cv2.resize(bgr_deblurred, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            rgb_tmp = Image.fromarray(bgr_deblurred[:, :, ::-1]).resize((target_w, target_h), Image.Resampling.LANCZOS)
+            bgr_deblurred = np.asarray(rgb_tmp, dtype=np.uint8)[:, :, ::-1].copy()
+
+        work_hd = bgr_deblurred.astype(np.float32)
+        work_hd = _coupled_shock_and_unsharp(
+            work_hd, 5, 1.1, shock_alpha=0.48, unsharp_gain=1.05, slope=2.8, overshoot_allowance=0.05
+        )
+        bgr_deblurred = np.clip(work_hd, 0, 255).astype(np.uint8)
+
+    # Step 4: Gentle contour-preserving bilateral polish for smooth anti-aliased edges
+    if cv2 is not None:
+        bgr_deblurred = cv2.bilateralFilter(bgr_deblurred, d=5, sigmaColor=12, sigmaSpace=12)
+    enhanced_rgb = bgr_deblurred[:, :, ::-1]
+    return Image.fromarray(enhanced_rgb)
+
+
+def detect_and_enhance_blurry_image(img_b64: str) -> dict:
+    """
+    Inspect the uploaded leaf image for blurriness.
+    When blurry (blur_score < BLUR_SHARPNESS_THRESHOLD), apply a multi-stage
+    computer vision deblurring and clarity restoration pipeline and return the
+    enhanced image base64.
+    """
+    try:
+        image_data = base64.b64decode(img_b64)
+        orig_img = Image.open(io.BytesIO(image_data))
+        if orig_img.mode != "RGB":
+            orig_img = orig_img.convert("RGB")
+    except Exception as exc:
+        logger.exception("Failed to decode image for blur detection")
+        return {
+            "is_blurry": False,
+            "image_enhanced": False,
+            "enhancement_status": "not_needed",
+            "blur_score": None,
+            "enhanced_blur_score": None,
+            "enhanced_image_base64": None,
+            "enhanced_image_mime": None,
+        }
+
+    blur_score = compute_blur_score(orig_img)
+    is_blurry = bool(blur_score < BLUR_SHARPNESS_THRESHOLD)
+
+    if not is_blurry:
+        return {
+            "is_blurry": False,
+            "image_enhanced": False,
+            "enhancement_status": "not_needed",
+            "blur_score": round(blur_score, 2),
+            "enhanced_blur_score": None,
+            "enhanced_image_base64": None,
+            "enhanced_image_mime": None,
+        }
+
+    # Image is blurry -> apply high-clarity CV deblurring & edge restoration pipeline
+    try:
+        enhanced = _enhance_leaf_clarity(orig_img)
+
+        buf = io.BytesIO()
+        enhanced.save(buf, format="JPEG", quality=96, subsampling=0)
+        enhanced_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        enhanced_blur_score = compute_blur_score(enhanced)
+
+        logger.info(
+            "Blurry leaf image enhanced: blur_score=%.2f -> enhanced_blur_score=%.2f",
+            blur_score,
+            enhanced_blur_score,
+        )
+        return {
+            "is_blurry": True,
+            "image_enhanced": True,
+            "enhancement_status": "enhanced",
+            "blur_score": round(blur_score, 2),
+            "enhanced_blur_score": round(enhanced_blur_score, 2),
+            "enhanced_image_base64": enhanced_b64,
+            "enhanced_image_mime": "image/jpeg",
+        }
+    except Exception as exc:
+        logger.exception("Blurry image enhancement failed")
+        return {
+            "is_blurry": True,
+            "image_enhanced": False,
+            "enhancement_status": "failed",
+            "blur_score": round(blur_score, 2),
+            "enhanced_blur_score": None,
+            "enhanced_image_base64": None,
+            "enhanced_image_mime": None,
+        }
 
 
 def preprocess_image(img_b64: str):
@@ -336,14 +573,22 @@ def detect_disease_symptoms(image_array: np.ndarray) -> dict:
 def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
     """
     Analyze plant leaf image using two-stage rule-based image analysis.
+    Stage 0: Blurry image detection & CV enhancement (when blurry)
     Stage 1: Plant Health Classification (Healthy/Unhealthy)
     Stage 2: If Unhealthy, predict disease type
     Water stress analysis is independent from disease analysis.
     Confidence validation: <70% = Uncertain Result - Manual Verification Recommended.
     """
+    enh_info = detect_and_enhance_blurry_image(img_b64)
+    analysis_b64 = (
+        enh_info["enhanced_image_base64"]
+        if enh_info.get("image_enhanced") and enh_info.get("enhanced_image_base64")
+        else img_b64
+    )
+
     try:
-        # Preprocess image
-        image_array = preprocess_image(img_b64)
+        # Preprocess image (uses enhanced image when input was blurry and enhanced)
+        image_array = preprocess_image(analysis_b64)
         
         # STAGE 1 & 2: Disease detection (two-stage pipeline)
         disease_result = detect_disease_symptoms(image_array)
@@ -354,6 +599,7 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
         
         # INDEPENDENT: Water stress analysis (separate from disease)
         water_stress = estimate_water_stress(image_array)
+        stress_lower = water_stress.lower()
         
         # Convert confidence to percentage
         confidence_percent = int(confidence * 100)
@@ -370,7 +616,10 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
         
         # Generate recommendations based on health status (not disease-specific for uncertain)
         if health_status == "Healthy":
-            severity_assessment = "Plant appears healthy with no obvious signs of disease."
+            severity_assessment = (
+                f"Plant appears healthy with {confidence_percent}% confidence. "
+                f"Water stress is {stress_lower}."
+            )
             recommended_actions = [
                 "Maintain current watering schedule",
                 "Monitor for any changes in leaf appearance",
@@ -384,7 +633,11 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
         elif health_status == "Unhealthy":
             # Disease-specific recommendations
             if "Late Blight" in disease_name:
-                severity_assessment = f"Late blight detected with {confidence_percent}% confidence. Serious fungal disease."
+                severity_assessment = (
+                    f"Critical condition ({confidence_percent}% confidence). "
+                    f"Late blight spreads rapidly and can destroy entire crops. "
+                    f"Water stress is {stress_lower}."
+                )
                 recommended_actions = [
                     "Remove and destroy affected plants immediately",
                     "Apply fungicide containing chlorothalonil",
@@ -398,7 +651,11 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
                     "Avoid overhead irrigation"
                 ]
             elif "Early Blight" in disease_name:
-                severity_assessment = f"Early blight detected with {confidence_percent}% confidence. Fungal infection likely."
+                severity_assessment = (
+                    f"Moderate severity ({confidence_percent}% confidence). "
+                    f"Early blight typically affects lower leaves first. "
+                    f"Water stress is {stress_lower}."
+                )
                 recommended_actions = [
                     "Remove affected leaves to prevent spread",
                     "Apply copper-based fungicide",
@@ -412,7 +669,11 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
                     "Use disease-resistant varieties"
                 ]
             elif "Leaf Mold" in disease_name:
-                severity_assessment = f"Leaf mold detected with {confidence_percent}% confidence. Fungal infection present."
+                severity_assessment = (
+                    f"Moderate severity ({confidence_percent}% confidence). "
+                    f"Leaf mold thrives in high humidity conditions. "
+                    f"Water stress is {stress_lower}."
+                )
                 recommended_actions = [
                     "Improve air circulation significantly",
                     "Reduce humidity around plants",
@@ -420,41 +681,53 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
                     "Apply fungicide if severe"
                 ]
                 preventive_measures = [
-                    "Maintain proper plant spacing",
+                    "Maintain proper spacing between plants",
                     "Avoid overcrowding",
                     "Ensure good ventilation",
                     "Water at soil level only"
                 ]
             elif "Septoria Leaf Spot" in disease_name:
-                severity_assessment = f"Septoria leaf spot detected with {confidence_percent}% confidence. Common fungal disease."
+                severity_assessment = (
+                    f"Moderate severity ({confidence_percent}% confidence). "
+                    f"Septoria leaf spot can cause significant defoliation. "
+                    f"Water stress is {stress_lower}."
+                )
                 recommended_actions = [
                     "Remove infected leaves immediately",
                     "Apply fungicide containing chlorothalonil",
-                    "Improve air circulation",
+                    "Improve air circulation around plants",
                     "Mulch to prevent splash dispersal"
                 ]
                 preventive_measures = [
                     "Rotate crops annually",
                     "Space plants properly",
-                    "Avoid overhead watering",
+                    "Avoid overhead irrigation",
                     "Remove plant debris in fall"
                 ]
             elif "Bacterial Spot" in disease_name:
-                severity_assessment = f"Bacterial spot detected with {confidence_percent}% confidence. Bacterial infection."
+                severity_assessment = (
+                    f"Moderate to high severity ({confidence_percent}% confidence). "
+                    f"Bacterial spot affects leaves and fruit. "
+                    f"Water stress is {stress_lower}."
+                )
                 recommended_actions = [
                     "Remove infected plant material",
                     "Apply copper-based bactericide",
-                    "Avoid working with wet plants",
+                    "Avoid working with plants when wet",
                     "Disinfect tools between uses"
                 ]
                 preventive_measures = [
                     "Use disease-free seeds and transplants",
                     "Avoid overhead irrigation",
-                    "Maintain proper plant spacing",
+                    "Maintain proper spacing between plants",
                     "Control insect vectors"
                 ]
             else:
-                severity_assessment = f"Disease detected with {confidence_percent}% confidence. Specific type unclear."
+                severity_assessment = (
+                    f"Plant appears unhealthy ({confidence_percent}% confidence), "
+                    f"but specific disease could not be identified with certainty. "
+                    f"Water stress is {stress_lower}."
+                )
                 recommended_actions = [
                     "Inspect plant closely for additional symptoms",
                     "Consult agricultural extension service",
@@ -468,7 +741,10 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
                     "Keep garden area clean"
                 ]
         else:  # Uncertain
-            severity_assessment = f"Uncertain result with {confidence_percent}% confidence. Manual verification recommended."
+            severity_assessment = (
+                f"Low confidence ({confidence_percent}%) in classification. "
+                f"Manual inspection recommended. Water stress appears {stress_lower}."
+            )
             recommended_actions = [
                 "Inspect plant closely for symptoms",
                 "Consult agricultural extension",
@@ -489,7 +765,23 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
         else:  # Critical
             water_actions = ["Immediate deep watering required", "Consider plant recovery measures", "Protect from direct sunlight"]
         
-        recommended_actions.extend(water_actions)
+        for wa in water_actions:
+            if wa not in recommended_actions:
+                recommended_actions.append(wa)
+
+        crop_note = f" Contextualized for {crop_hint.strip()}." if crop_hint and crop_hint.strip() else ""
+        if health_status == "Uncertain":
+            notes_str = (
+                f"Low confidence ({confidence_percent}%) suggests image quality issues or atypical symptoms. "
+                f"Consider retaking photo in better lighting or consulting an expert.{crop_note}"
+            )
+        else:
+            notes_str = (
+                f"Two-stage analysis: Binary health classification followed by disease identification.{crop_note} "
+                f"Based on visible symptoms only."
+            )
+        if enh_info.get("image_enhanced"):
+            notes_str += " Blurred input image was automatically enhanced prior to analysis."
         
         return {
             "plant_health_status": health_status,
@@ -501,7 +793,14 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
             "recommended_actions": recommended_actions[:6],  # Limit to 6 actions
             "preventive_measures": preventive_measures[:4],  # Limit to 4 measures
             "is_plant_image": True,
-            "notes": f"Two-stage analysis: Health={health_status}, Disease={disease_name}, Confidence={confidence_percent}%, Water Stress={water_stress}."
+            "notes": notes_str,
+            "is_blurry": enh_info["is_blurry"],
+            "image_enhanced": enh_info["image_enhanced"],
+            "enhancement_status": enh_info["enhancement_status"],
+            "blur_score": enh_info["blur_score"],
+            "enhanced_blur_score": enh_info["enhanced_blur_score"],
+            "enhanced_image_base64": enh_info["enhanced_image_base64"],
+            "enhanced_image_mime": enh_info["enhanced_image_mime"],
         }
         
     except Exception as exc:
@@ -513,7 +812,7 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
             "confidence_score": 30,
             "water_stress_level": "Low",
             "detected_symptoms": ["Image analysis error occurred", "Manual verification required"],
-            "severity_assessment": "Unable to analyze image due to processing error. Manual inspection required.",
+            "severity_assessment": "Unable to complete analysis due to technical error.",
             "recommended_actions": [
                 "Inspect plant closely for symptoms",
                 "Consult agricultural extension",
@@ -524,5 +823,13 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
                 "Maintain proper plant care practices"
             ],
             "is_plant_image": True,
-            "notes": f"Image analysis failed: {str(exc)}. Manual verification recommended."
+            "notes": "A technical error occurred during analysis. Please ensure the image is a clear photo of a plant leaf and try again.",
+            "is_blurry": enh_info["is_blurry"],
+            "image_enhanced": enh_info["image_enhanced"],
+            "enhancement_status": enh_info["enhancement_status"],
+            "blur_score": enh_info["blur_score"],
+            "enhanced_blur_score": enh_info["enhanced_blur_score"],
+            "enhanced_image_base64": enh_info["enhanced_image_base64"],
+            "enhanced_image_mime": enh_info["enhanced_image_mime"],
         }
+

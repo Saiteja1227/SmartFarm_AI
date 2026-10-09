@@ -32,11 +32,26 @@ def _require_user_id():
     return uid, None
 
 
-# ── Health ─────────────────────────────────────────────────────────────────────
+# ── Health & Translations ─────────────────────────────────────────────────────
 
 @api_bp.route("/", methods=["GET"])
 def health():
     return jsonify({"message": "SmartFarm AI API", "status": "ok"})
+
+
+@api_bp.route("/translations", methods=["GET"])
+def list_translations():
+    from app.translations import LANGUAGES
+    return jsonify({"languages": LANGUAGES})
+
+
+@api_bp.route("/translations/<lang>", methods=["GET"])
+def get_translations_for_lang(lang):
+    from app.translations import SUPPORTED_LANG_CODES, get_translation_dict
+    code = (lang or "en").strip().lower()
+    if code not in SUPPORTED_LANG_CODES:
+        code = "en"
+    return jsonify({"language": code, "translations": get_translation_dict(code)})
 
 
 # ── Analyze ───────────────────────────────────────────────────────────────────
@@ -177,16 +192,19 @@ def download_pdf(scan_id):
     if not doc:
         return jsonify({"detail": "Scan not found."}), 404
 
+    req_lang = (request.args.get("lang") or doc.get("language") or "en").strip().lower()
+
     try:
-        from app.services.pdf_service import generate_report_pdf
-        pdf_bytes = generate_report_pdf(doc)
+        from app.services.pdf_service import generate_pdf_bytes
+        pdf_bytes = generate_pdf_bytes(doc, lang=req_lang)
     except RuntimeError as exc:
         return jsonify({"detail": str(exc)}), 501
 
     from flask import Response
-    filename = f"smartfarm-report-{scan_id[:8]}.pdf"
+    filename = f"smartfarm-report-{req_lang}-{scan_id[:8]}.pdf"
     return Response(
         pdf_bytes,
         mimetype="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+

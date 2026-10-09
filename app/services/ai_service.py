@@ -177,7 +177,22 @@ def analyze_image(img_b64: str, crop_hint: str, language_code: str) -> dict:
         # Return fallback response on error
         language_name = LANGUAGE_NAMES.get(language_code, "English")
         fallback = _get_fallback_response(language_name, crop_hint)
+        try:
+            from app.services.cnn_analysis import detect_and_enhance_blurry_image
+            enh_info = detect_and_enhance_blurry_image(img_b64)
+            fallback.update({
+                "is_blurry": enh_info["is_blurry"],
+                "image_enhanced": enh_info["image_enhanced"],
+                "enhancement_status": enh_info["enhancement_status"],
+                "blur_score": enh_info["blur_score"],
+                "enhanced_blur_score": enh_info["enhanced_blur_score"],
+                "enhanced_image_base64": enh_info["enhanced_image_base64"],
+                "enhanced_image_mime": enh_info["enhanced_image_mime"],
+            })
+        except Exception:
+            pass
         if language_code and language_code != "en":
             from app.translations import translate_report
             fallback = translate_report(fallback, language_code)
         return fallback
+

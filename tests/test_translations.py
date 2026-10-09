@@ -1,209 +1,232 @@
-"""Tests for centralized translation system and multilingual AI/ML recommendations."""
+"""Comprehensive tests for all 3 required changes in SmartFarm AI:
+1. Complete 8-Language Website Multi-Language Support (en, hi, te, ta, bn, mr, kn, gu)
+2. Human-Readable Multilingual PDF Reports in the Selected Language
+3. Blurry Leaf Image Detection, Enhancement & Side-by-Side Original vs Enhanced Display
+"""
+import base64
+import io
 import json
 import re
+import unittest
 from pathlib import Path
 
-from app.translations import LANGUAGES, get_all_translations, translate, translate_report
+from PIL import Image, ImageDraw, ImageFilter
+
+from app import create_app
 from app.services.ai_service import analyze_image
-import io
-from PIL import Image
-import base64
+from app.services.cnn_analysis import analyze_with_cnn, detect_and_enhance_blurry_image
+from app.services.pdf_service import generate_pdf_bytes
+from app.translations import (
+    LANGUAGES,
+    SUPPORTED_LANG_CODES,
+    get_all_translations,
+    translate,
+    translate_report,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
-
-def test_translation_files_exist_and_match():
-    en_path = ROOT / "translations/en.json"
-    hi_path = ROOT / "translations/hi.json"
-    te_path = ROOT / "translations/te.json"
-
-    assert en_path.exists(), "translations/en.json must exist"
-    assert hi_path.exists(), "translations/hi.json must exist"
-    assert te_path.exists(), "translations/te.json must exist"
-
-    with open(en_path, "r", encoding="utf-8") as f:
-        en = json.load(f)
-    with open(hi_path, "r", encoding="utf-8") as f:
-        hi = json.load(f)
-    with open(te_path, "r", encoding="utf-8") as f:
-        te = json.load(f)
-
-    assert len(en) >= 200, f"Expected 200+ keys in en.json, got {len(en)}"
-    assert set(en.keys()) == set(hi.keys()), f"Key diff between en and hi: {set(en.keys()) ^ set(hi.keys())}"
-    assert set(en.keys()) == set(te.keys()), f"Key diff between en and te: {set(en.keys()) ^ set(te.keys())}"
-
-    # Ensure no empty values
-    for k, v in en.items():
-        assert v.strip(), f"Empty value for {k} in en.json"
-    for k, v in hi.items():
-        assert v.strip(), f"Empty value for {k} in hi.json"
-    for k, v in te.items():
-        assert v.strip(), f"Empty value for {k} in te.json"
+SCRIPT_REGEXES = {
+    "en": re.compile(r"[A-Za-z]"),
+    "hi": re.compile(r"[\u0900-\u097F]"),  # Devanagari
+    "mr": re.compile(r"[\u0900-\u097F]"),  # Devanagari
+    "te": re.compile(r"[\u0C00-\u0C7F]"),  # Telugu
+    "ta": re.compile(r"[\u0B80-\u0BFF]"),  # Tamil
+    "bn": re.compile(r"[\u0980-\u09FF]"),  # Bengali
+    "kn": re.compile(r"[\u0C80-\u0CFF]"),  # Kannada
+    "gu": re.compile(r"[\u0A80-\u0AFF]"),  # Gujarati
+}
 
 
-def test_ui_translations():
-    assert translate("en", "nav.analyze") == "Analyze"
-    assert translate("hi", "nav.analyze") == "विश्लेषण"
-    assert translate("te", "nav.analyze") == "విశ్లేషణ"
+def _make_sharp_and_blurry_leaf_b64():
+    sharp_img = Image.new("RGB", (300, 300), (32, 128, 42))
+    draw = ImageDraw.Draw(sharp_img)
+    for i in range(12, 288, 12):
+        draw.line([(150, i), (28, i - 14)], fill=(95, 205, 85), width=2)
+        draw.line([(150, i), (272, i - 14)], fill=(95, 205, 85), width=2)
+    for x, y in [(85, 95), (195, 145), (125, 215)]:
+        draw.ellipse([x - 14, y - 14, x + 14, y + 14], fill=(105, 55, 25), outline=(225, 195, 45), width=2)
 
-    assert translate("en", "nav.history") == "History"
-    assert translate("hi", "nav.history") == "इतिहास"
-    assert translate("te", "nav.history") == "చరిత్ర"
+    buf_s = io.BytesIO()
+    sharp_img.save(buf_s, format="JPEG", quality=95)
+    sharp_b64 = base64.b64encode(buf_s.getvalue()).decode("ascii")
 
-    assert translate("en", "status.Healthy") == "Healthy"
-    assert translate("hi", "status.Healthy") == "स्वस्थ"
-    assert translate("te", "status.Healthy") == "ఆరోగ్యకరం"
+    blurry_img = sharp_img.filter(ImageFilter.GaussianBlur(radius=4.5))
+    buf_b = io.BytesIO()
+    blurry_img.save(buf_b, format="JPEG", quality=90)
+    blurry_b64 = base64.b64encode(buf_b.getvalue()).decode("ascii")
 
-    assert translate("en", "stress.High") == "High"
-    assert translate("hi", "stress.High") == "अधिक"
-    assert translate("te", "stress.High") == "అధికం"
-
-
-def test_translate_report_hindi():
-    sample = {
-        "plant_health_status": "Unhealthy",
-        "predicted_disease": "Late Blight",
-        "confidence_score": 85,
-        "water_stress_level": "High",
-        "detected_symptoms": ["Brown spots", "Lesions"],
-        "severity_assessment": "Late blight detected with 85% confidence. Serious fungal disease.",
-        "recommended_actions": [
-            "Remove and destroy affected plants immediately",
-            "Apply fungicide containing chlorothalonil",
-        ],
-        "preventive_measures": [
-            "Use certified disease-free seeds",
-            "Plant resistant varieties",
-        ],
-        "notes": "Two-stage analysis: Health=Unhealthy, Disease=Late Blight, Confidence=85%, Water Stress=High.",
-    }
-
-    hi_rep = translate_report(sample, "hi")
-
-    # Enums must remain strictly English for API/DB contracts
-    assert hi_rep["plant_health_status"] == "Unhealthy"
-    assert hi_rep["water_stress_level"] == "High"
-    assert hi_rep["confidence_score"] == 85
-
-    # Human-facing text must be Hindi / Devanagari script
-    devanagari = re.compile(r"[\u0900-\u097F]")
-    assert devanagari.search(hi_rep["predicted_disease"])
-    assert any(devanagari.search(s) for s in hi_rep["detected_symptoms"])
-    assert any(devanagari.search(a) for a in hi_rep["recommended_actions"])
-    assert any(devanagari.search(p) for p in hi_rep["preventive_measures"])
-    assert devanagari.search(hi_rep["severity_assessment"])
-    assert devanagari.search(hi_rep["notes"])
+    return sharp_b64, blurry_b64
 
 
-def test_translate_report_telugu():
-    sample = {
-        "plant_health_status": "Unhealthy",
-        "predicted_disease": "Early Blight",
-        "confidence_score": 75,
-        "water_stress_level": "Moderate",
-        "detected_symptoms": ["Yellow patches", "Circular lesions"],
-        "severity_assessment": "Early blight detected with 75% confidence. Fungal infection likely.",
-        "recommended_actions": [
-            "Remove affected leaves to prevent spread",
-            "Apply copper-based fungicide",
-        ],
-        "preventive_measures": [
-            "Space plants properly for airflow",
-            "Water at base of plants, not leaves",
-        ],
-        "notes": "Two-stage analysis: Health=Unhealthy, Disease=Early Blight, Confidence=75%, Water Stress=Moderate.",
-    }
+class TestSmartFarmThreeChanges(unittest.TestCase):
 
-    te_rep = translate_report(sample, "te")
+    def test_1_all_8_translation_files_exist_and_have_full_key_parity(self):
+        expected_langs = ["en", "hi", "te", "ta", "bn", "mr", "kn", "gu"]
+        self.assertEqual(SUPPORTED_LANG_CODES, expected_langs)
 
-    # Enums must remain strictly English for API/DB contracts
-    assert te_rep["plant_health_status"] == "Unhealthy"
-    assert te_rep["water_stress_level"] == "Moderate"
-    assert te_rep["confidence_score"] == 75
+        en_dict = json.loads((ROOT / "translations/en.json").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(en_dict), 250)
 
-    # Human-facing text must be Telugu script
-    telugu = re.compile(r"[\u0C00-\u0C7F]")
-    assert telugu.search(te_rep["predicted_disease"])
-    assert any(telugu.search(s) for s in te_rep["detected_symptoms"])
-    assert any(telugu.search(a) for a in te_rep["recommended_actions"])
-    assert any(telugu.search(p) for p in te_rep["preventive_measures"])
-    assert telugu.search(te_rep["severity_assessment"])
-    assert telugu.search(te_rep["notes"])
+        for lang in expected_langs:
+            fpath = ROOT / f"translations/{lang}.json"
+            self.assertTrue(fpath.exists(), f"Missing translation file: {fpath}")
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(en_dict.keys()),
+                set(data.keys()),
+                f"Key mismatch in {lang}.json: {set(en_dict.keys()) ^ set(data.keys())}",
+            )
+            for k, v in data.items():
+                self.assertTrue(str(v).strip(), f"Empty translation for {k} in {lang}.json")
 
+            # Verify native script characters appear in UI & ML keys
+            script_re = SCRIPT_REGEXES[lang]
+            for check_key in [
+                "nav.analyze",
+                "nav.history",
+                "hero.title1",
+                "uploader.analyzeBtn",
+                "report.overline",
+                "report.originalImage",
+                "report.enhancedImage",
+                "pdf.title",
+            ]:
+                self.assertIsNotNone(
+                    script_re.search(data[check_key]),
+                    f"Key {check_key} in {lang} does not match expected script: {data[check_key]}",
+                )
 
-def test_translate_report_healthy_telugu_roundtrip():
-    sample_healthy = {
-        "plant_health_status": "Healthy",
-        "predicted_disease": "Healthy",
-        "confidence_score": 85,
-        "water_stress_level": "Low",
-        "detected_symptoms": [
-            "No visible disease symptoms",
-            "Uniform green color",
-            "No lesions or spots"
-        ],
-        "severity_assessment": "Plant appears healthy with no obvious signs of disease.",
-        "recommended_actions": [
-            "Maintain current watering schedule",
-            "Monitor for any changes in leaf appearance",
-            "Maintain proper plant nutrition"
-        ],
-        "preventive_measures": [
-            "Regularly inspect plants for early signs of disease",
-            "Maintain proper spacing between plants",
-            "Ensure good air circulation"
-        ],
-        "notes": "Two-stage analysis: Health=Healthy, Disease=Healthy, Confidence=85%, Water Stress=Low."
-    }
+    def test_2_multihop_report_translation_across_all_8_languages(self):
+        sample = {
+            "plant_health_status": "Unhealthy",
+            "predicted_disease": "Early Blight",
+            "confidence_score": 88,
+            "water_stress_level": "Moderate",
+            "crop_name": "Tomato",
+            "detected_symptoms": ["Brown spots", "Yellow patches", "Circular lesions"],
+            "severity_assessment": (
+                "Moderate severity (88% confidence). Early blight typically affects lower leaves first. "
+                "Water stress is moderate."
+            ),
+            "recommended_actions": [
+                "Remove affected leaves to prevent spread",
+                "Apply copper-based fungicide",
+                "Increase watering frequency slightly",
+            ],
+            "preventive_measures": [
+                "Space plants properly for airflow",
+                "Water at base of plants, not leaves",
+            ],
+            "notes": (
+                "Two-stage analysis: Binary health classification followed by disease identification. "
+                "Contextualized for Tomato. Based on visible symptoms only."
+            ),
+            "image_enhanced": True,
+        }
 
-    te = translate_report(sample_healthy, "te")
-    assert te["plant_health_status"] == "Healthy"
-    assert te["water_stress_level"] == "Low"
-    assert te["confidence_score"] == 85
-    assert te["predicted_disease"] == "ఆరోగ్యకరమైనది"
-    assert te["severity_assessment"] == "మొక్క ఆరోగ్యంగా కనిపిస్తోంది మరియు ఎటువంటి వ్యాధి లక్షణాలు లేవు."
-    assert "కనిపించే వ్యాధి లక్షణాలు లేవు" in te["detected_symptoms"]
-    assert "ప్రస్తుత నీటి షెడ్యూల్‌ను కొనసాగించండి" in te["recommended_actions"]
-    assert "మొక్కల మధ్య సరైన దూరం పాటించండి" in te["preventive_measures"]
-    assert "రెండు-దశల విశ్లేషణ" in te["notes"]
-    assert "ఆరోగ్యం=ఆరోగ్యకరం" in te["notes"]
+        cur = sample
+        # Hop through every single language in sequence and back to English
+        for lang in ["te", "hi", "ta", "bn", "mr", "kn", "gu", "en"]:
+            cur = translate_report(cur, lang)
+            self.assertEqual(cur["plant_health_status"], "Unhealthy")
+            self.assertEqual(cur["water_stress_level"], "Moderate")
+            self.assertEqual(cur["confidence_score"], 88)
 
-    # Roundtrip back to English
-    en = translate_report(te, "en")
-    assert en["predicted_disease"] == "Healthy"
-    assert en["severity_assessment"] == "Plant appears healthy with no obvious signs of disease."
-    assert "No visible disease symptoms" in en["detected_symptoms"]
-    assert "Maintain current watering schedule" in en["recommended_actions"]
-    assert "Maintain proper spacing between plants" in en["preventive_measures"]
-    assert "Two-stage analysis" in en["notes"]
+            script_re = SCRIPT_REGEXES[lang]
+            self.assertIsNotNone(script_re.search(cur["predicted_disease"]), f"Failed disease in {lang}")
+            self.assertIsNotNone(script_re.search(cur["severity_assessment"]), f"Failed severity in {lang}")
+            self.assertIsNotNone(script_re.search(cur["notes"]), f"Failed notes in {lang}")
+            self.assertTrue(all(script_re.search(s) for s in cur["detected_symptoms"]), f"Failed symptoms in {lang}")
+            self.assertTrue(all(script_re.search(a) for a in cur["recommended_actions"]), f"Failed actions in {lang}")
+            self.assertTrue(all(script_re.search(p) for p in cur["preventive_measures"]), f"Failed preventive in {lang}")
 
+        # Verify clean round-trip back to English
+        self.assertEqual(cur["predicted_disease"], "Early Blight")
+        self.assertIn("Moderate severity (88% confidence)", cur["severity_assessment"])
+        self.assertIn("Remove affected leaves to prevent spread", cur["recommended_actions"])
 
-def test_ai_service_analyze_image_multilingual():
-    img = Image.new("RGB", (224, 224), color=(34, 139, 34))
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    def test_3_blurry_vs_sharp_leaf_image_detection_and_enhancement(self):
+        sharp_b64, blurry_b64 = _make_sharp_and_blurry_leaf_b64()
 
-    # English
-    res_en = analyze_image(b64, "Tomato", "en")
-    assert res_en["plant_health_status"] in {"Healthy", "Unhealthy", "Uncertain"}
+        # Sharp image -> not blurry, not enhanced
+        sharp_res = analyze_with_cnn(sharp_b64, "Tomato", "en")
+        self.assertFalse(sharp_res["is_blurry"])
+        self.assertFalse(sharp_res["image_enhanced"])
+        self.assertEqual(sharp_res["enhancement_status"], "not_needed")
+        self.assertIsNone(sharp_res["enhanced_image_base64"])
 
-    # Hindi
-    res_hi = analyze_image(b64, "Tomato", "hi")
-    devanagari = re.compile(r"[\u0900-\u097F]")
-    assert devanagari.search(res_hi["predicted_disease"]) or devanagari.search(res_hi["severity_assessment"])
+        # Blurry image -> detected as blurry, enhanced, and enhanced image returned
+        blurry_res = analyze_with_cnn(blurry_b64, "Tomato", "en")
+        self.assertTrue(blurry_res["is_blurry"])
+        self.assertTrue(blurry_res["image_enhanced"])
+        self.assertEqual(blurry_res["enhancement_status"], "enhanced")
+        self.assertIsNotNone(blurry_res["enhanced_image_base64"])
+        self.assertGreater(blurry_res["enhanced_blur_score"], blurry_res["blur_score"])
 
-    # Telugu
-    res_te = analyze_image(b64, "Tomato", "te")
-    telugu = re.compile(r"[\u0C00-\u0C7F]")
-    assert telugu.search(res_te["predicted_disease"]) or telugu.search(res_te["severity_assessment"])
+        # Verify enhanced image is valid decodable high-clarity JPEG with preserved aspect ratio
+        enh_bytes = base64.b64decode(blurry_res["enhanced_image_base64"])
+        enh_pil = Image.open(io.BytesIO(enh_bytes))
+        self.assertEqual(enh_pil.size[0], enh_pil.size[1])
+        self.assertGreaterEqual(enh_pil.size[0], 900)
+
+    def test_4_pdf_generation_in_all_8_languages_with_enhanced_images(self):
+        sharp_b64, blurry_b64 = _make_sharp_and_blurry_leaf_b64()
+        blurry_res = analyze_with_cnn(blurry_b64, "Tomato", "en")
+        blurry_res["id"] = "test-scan-12345678"
+        blurry_res["crop_name"] = "Tomato"
+        blurry_res["image_base64"] = blurry_b64
+        blurry_res["image_mime"] = "image/jpeg"
+        blurry_res["created_at"] = "2026-10-09T10:00:00Z"
+
+        for lang in SUPPORTED_LANG_CODES:
+            pdf_bytes = generate_pdf_bytes(blurry_res, lang=lang)
+            self.assertTrue(pdf_bytes.startswith(b"%PDF-"), f"Invalid PDF header for {lang}")
+            self.assertGreater(len(pdf_bytes), 5000, f"PDF too small for {lang}")
+
+    def test_5_flask_api_endpoints_for_translations_blur_and_pdf(self):
+        app = create_app()
+        client = app.test_client()
+        headers = {"X-User-Id": "test-user-multilang"}
+
+        # 1. Check /api/translations/<lang> for all 8 languages
+        for lang in SUPPORTED_LANG_CODES:
+            resp = client.get(f"/api/translations/{lang}")
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+            self.assertEqual(payload["language"], lang)
+            self.assertGreaterEqual(len(payload["translations"]), 250)
+
+        # 2. Upload a blurry leaf image in Tamil ('ta') and verify response + PDF download in Telugu ('te')
+        _, blurry_b64 = _make_sharp_and_blurry_leaf_b64()
+        blurry_bytes = base64.b64decode(blurry_b64)
+
+        resp_analyze = client.post(
+            "/api/analyze",
+            headers=headers,
+            data={
+                "image": (io.BytesIO(blurry_bytes), "blurry_leaf.jpg"),
+                "crop_name": "Tomato",
+                "language": "ta",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp_analyze.status_code, 200)
+        scan_doc = resp_analyze.get_json()
+        self.assertTrue(scan_doc["is_blurry"])
+        self.assertTrue(scan_doc["image_enhanced"])
+        self.assertTrue(scan_doc["enhanced_image_base64"])
+        self.assertIsNotNone(SCRIPT_REGEXES["ta"].search(scan_doc["predicted_disease"]))
+
+        # 3. Download PDF for this scan in all 8 languages via /api/scan/<id>/pdf?lang=<code>
+        scan_id = scan_doc["id"]
+        for lang in SUPPORTED_LANG_CODES:
+            pdf_resp = client.get(f"/api/scan/{scan_id}/pdf?lang={lang}", headers=headers)
+            self.assertEqual(pdf_resp.status_code, 200)
+            self.assertEqual(pdf_resp.mimetype, "application/pdf")
+            self.assertIn(f"smartfarm-report-{lang}-", pdf_resp.headers.get("Content-Disposition", ""))
+            self.assertTrue(pdf_resp.data.startswith(b"%PDF-"))
 
 
 if __name__ == "__main__":
-    test_translation_files_exist_and_match()
-    test_ui_translations()
-    test_translate_report_hindi()
-    test_translate_report_telugu()
-    test_translate_report_healthy_telugu_roundtrip()
-    test_ai_service_analyze_image_multilingual()
-    print("All translation tests passed successfully!")
+    unittest.main()
