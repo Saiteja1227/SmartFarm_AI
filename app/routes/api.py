@@ -11,6 +11,7 @@ from app.models.scan import (
     get_history,
     get_scan,
     insert_scan,
+    make_failed_scan_doc,
     make_scan_doc,
 )
 from app.services.ai_service import SUPPORTED_LANGUAGES, analyze_image
@@ -87,6 +88,18 @@ def analyze():
     try:
         ai_result = analyze_image(img_b64, crop_name, language)
     except RuntimeError as exc:
+        try:
+            insert_scan(
+                make_failed_scan_doc(
+                    user_id=user_id,
+                    crop_name=crop_name or None,
+                    language=language,
+                    image_mime=mime,
+                    error_reason=str(exc),
+                )
+            )
+        except Exception:
+            logger.exception("Failed to record failed scan attempt")
         return jsonify({"detail": str(exc)}), 502
 
     doc = make_scan_doc(

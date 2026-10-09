@@ -1,5 +1,6 @@
 """SmartFarm AI — Flask application factory."""
 import os
+from datetime import timedelta
 from flask import Flask
 from dotenv import load_dotenv
 
@@ -18,9 +19,25 @@ def create_app():
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.jinja_env.auto_reload = True
 
+    # ── Session & Admin Security Config ───────────────────────────────────────
+    is_secure_env = bool(
+        os.environ.get("VERCEL")
+        or os.environ.get("FLASK_ENV") == "production"
+        or os.environ.get("SESSION_COOKIE_SECURE", "").lower() == "true"
+    )
+    app.config["SESSION_COOKIE_NAME"] = "sf_session"
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = is_secure_env
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=8)
+    app.config["ADMIN_USERNAME"] = os.environ.get("ADMIN_USERNAME", "admin")
+    app.config["ADMIN_PASSWORD"] = os.environ.get("ADMIN_PASSWORD", "")
+    app.config["ADMIN_PASSWORD_HASH"] = os.environ.get("ADMIN_PASSWORD_HASH", "")
+
     @app.after_request
     def add_no_cache_headers(response):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        if "Cache-Control" not in response.headers:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
@@ -32,8 +49,10 @@ def create_app():
     # ── Blueprints ────────────────────────────────────────────────────────────
     from app.routes.main import main_bp
     from app.routes.api import api_bp
+    from app.routes.admin import admin_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(api_bp, url_prefix="/api")
+    app.register_blueprint(admin_bp)
 
     return app

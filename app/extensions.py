@@ -15,12 +15,16 @@ class _MemoryResult:
 
 class _MemoryCursor:
     def __init__(self, docs, projection=None):
-        self._docs = docs
+        self._docs = list(docs)
         self._projection = projection or {}
 
     def sort(self, key, direction):
         reverse = direction == -1
-        self._docs = sorted(self._docs, key=lambda d: d.get(key, ""), reverse=reverse)
+        self._docs = sorted(self._docs, key=lambda d: d.get(key) or "", reverse=reverse)
+        return self
+
+    def skip(self, n):
+        self._docs = self._docs[n:]
         return self
 
     def limit(self, n):
@@ -30,18 +34,60 @@ class _MemoryCursor:
     def __iter__(self):
         for doc in self._docs:
             if self._projection:
-                out = {}
-                for k in self._projection:
-                    if self._projection[k] and k in doc:
-                        out[k] = doc[k]
-                    elif not self._projection[k] and k != "_id" and k in doc:
-                        continue
-                if not self._projection:
-                    yield doc
+                has_include = any(v for k, v in self._projection.items() if k != "_id")
+                if has_include:
+                    out = {k: v for k, v in doc.items() if self._projection.get(k)}
+                    if self._projection.get("_id", 1) and "_id" in doc:
+                        out["_id"] = doc["_id"]
+                    yield out
                 else:
-                    yield {**out, **{k: v for k, v in doc.items() if k not in self._projection or self._projection[k] == 0}}
+                    yield {k: v for k, v in doc.items() if not (k in self._projection and self._projection[k] == 0)}
             else:
-                yield doc
+                yield dict(doc)
+
+
+def _match_condition(val, cond) -> bool:
+    if isinstance(cond, dict):
+        for op, target in cond.items():
+            if op == "$in":
+                if val not in (target or []):
+                    return False
+            elif op == "$ne":
+                if val == target:
+                    return False
+            elif op == "$gte":
+                if val is None or val < target:
+                    return False
+            elif op == "$lte":
+                if val is None or val > target:
+                    return False
+            elif op == "$regex":
+                import re
+                flags = re.IGNORECASE if cond.get("$options") and "i" in cond.get("$options", "") else 0
+                if not re.search(str(target), str(val or ""), flags):
+                    return False
+            elif op == "$options":
+                continue
+            else:
+                return False
+        return True
+    return val == cond
+
+
+def _matches_query(doc: dict, query: dict) -> bool:
+    if not query:
+        return True
+    for k, v in query.items():
+        if k == "$or":
+            if not any(_matches_query(doc, sub) for sub in v):
+                return False
+        elif k == "$and":
+            if not all(_matches_query(doc, sub) for sub in v):
+                return False
+        else:
+            if not _match_condition(doc.get(k), v):
+                return False
+    return True
 
 
 class _MemoryCollection:
@@ -54,16 +100,13 @@ class _MemoryCollection:
 
     def find(self, query=None, projection=None):
         query = query or {}
-        docs = []
-        for doc in self._docs:
-            if all(doc.get(k) == v for k, v in query.items()):
-                docs.append(doc)
+        docs = [doc for doc in self._docs if _matches_query(doc, query)]
         return _MemoryCursor(docs, projection)
 
     def find_one(self, query=None, projection=None):
         query = query or {}
         for doc in self._docs:
-            if all(doc.get(k) == v for k, v in query.items()):
+            if _matches_query(doc, query):
                 if projection:
                     has_include = any(v for k, v in projection.items() if k != "_id")
                     if has_include:
@@ -79,14 +122,24 @@ class _MemoryCollection:
     def delete_one(self, query=None):
         query = query or {}
         for idx, doc in enumerate(self._docs):
-            if all(doc.get(k) == v for k, v in query.items()):
+            if _matches_query(doc, query):
                 del self._docs[idx]
                 return _MemoryResult(1)
         return _MemoryResult(0)
 
     def count_documents(self, query=None):
         query = query or {}
-        return sum(1 for doc in self._docs if all(doc.get(k) == v for k, v in query.items()))
+        return sum(1 for doc in self._docs if _matches_query(doc, query))
+
+    def distinct(self, key, query=None):
+        query = query or {}
+        vals = []
+        for doc in self._docs:
+            if _matches_query(doc, query):
+                v = doc.get(key)
+                if v is not None and v not in vals:
+                    vals.append(v)
+        return vals
 
 
 class _MemoryDatabase:
