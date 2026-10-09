@@ -1,5 +1,6 @@
 """Private Admin Dashboard & Secure Scan History routes and APIs."""
 import base64
+import hashlib
 import hmac
 import logging
 import os
@@ -12,6 +13,7 @@ from flask import (
     Response,
     current_app,
     jsonify,
+    make_response,
     redirect,
     render_template,
     request,
@@ -26,11 +28,22 @@ logger = logging.getLogger(__name__)
 
 admin_bp = Blueprint("admin", __name__)
 
-# Session timeout (8 hours) and brute-force rate limit settings
+# Session timeout (8 hours), CSRF lifetime (2 hours), and brute-force rate limit settings
 ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 3600
+CSRF_MAX_AGE_SECONDS = 2 * 3600
+ADMIN_COOKIE_NAME = "sf_admin_token"
 RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 RATE_LIMIT_MAX_ATTEMPTS = 5
 _FAILED_LOGIN_ATTEMPTS = {}
+
+
+def _get_signing_key() -> bytes:
+    key = (
+        current_app.config.get("SECRET_KEY")
+        or os.environ.get("SECRET_KEY")
+        or "smartfarm-ai-prod-secret-key-2026-9f8e7d6c5b4a"
+    )
+    return str(key).encode("utf-8")
 
 
 def _get_client_ip() -> str:
@@ -123,29 +136,88 @@ def _verify_admin_credentials(username: str, password: str) -> bool:
     return bool(user_ok and pass_ok)
 
 
+def _create_admin_cookie_token(username: str, auth_time: int) -> str:
+    payload = f"admin|{username}|{auth_time}"
+    sig = hmac.new(_get_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    raw = f"{payload}|{sig}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _verify_admin_cookie_token(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        role, username, ts_str, sig = decoded.split("|", 3)
+        if role != "admin":
+            return False
+        expected_user = _get_admin_username()
+        if not hmac.compare_digest(username.encode("utf-8"), expected_user.encode("utf-8")):
+            return False
+        auth_time = int(ts_str)
+        if time.time() - auth_time > ADMIN_SESSION_MAX_AGE_SECONDS:
+            return False
+        payload = f"admin|{username}|{auth_time}"
+        expected_sig = hmac.new(_get_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, expected_sig)
+    except Exception:
+        return False
+
+
 def _is_authenticated_admin() -> bool:
-    """Verify server-side session has valid, non-expired administrator role."""
-    if not session.get("is_admin") or session.get("role") != "admin":
-        return False
+    """Verify server-side session or signed admin token has valid, non-expired administrator role."""
     expected_user = _get_admin_username()
-    sess_user = (session.get("admin_username") or "").strip()
-    if not sess_user or not hmac.compare_digest(sess_user.encode("utf-8"), expected_user.encode("utf-8")):
-        return False
-    auth_time = session.get("admin_auth_time")
-    if not isinstance(auth_time, (int, float)):
-        return False
-    if time.time() - auth_time > ADMIN_SESSION_MAX_AGE_SECONDS:
-        session.clear()
-        return False
-    return True
+    try:
+        if session.get("is_admin") and session.get("role") == "admin":
+            sess_user = (session.get("admin_username") or "").strip()
+            auth_time = session.get("admin_auth_time")
+            if (
+                sess_user
+                and hmac.compare_digest(sess_user.encode("utf-8"), expected_user.encode("utf-8"))
+                and isinstance(auth_time, (int, float))
+                and (time.time() - auth_time <= ADMIN_SESSION_MAX_AGE_SECONDS)
+            ):
+                return True
+    except Exception:
+        pass
+
+    cookie_token = request.cookies.get(ADMIN_COOKIE_NAME, "")
+    return _verify_admin_cookie_token(cookie_token)
 
 
 def _ensure_csrf_token() -> str:
-    token = session.get("admin_csrf_token")
-    if not token:
-        token = secrets.token_hex(32)
+    ts = str(int(time.time()))
+    nonce = secrets.token_hex(12)
+    msg = f"csrf|{ts}|{nonce}"
+    sig = hmac.new(_get_signing_key(), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+    token = f"{ts}.{nonce}.{sig}"
+    try:
         session["admin_csrf_token"] = token
+    except Exception:
+        pass
     return token
+
+
+def _verify_csrf_token(submitted: str) -> bool:
+    if not submitted:
+        return False
+    try:
+        expected_sess = session.get("admin_csrf_token") or ""
+        if expected_sess and hmac.compare_digest(submitted, expected_sess):
+            return True
+    except Exception:
+        pass
+
+    try:
+        ts_str, nonce, sig = submitted.split(".", 2)
+        ts = int(ts_str)
+        if abs(time.time() - ts) > CSRF_MAX_AGE_SECONDS:
+            return False
+        msg = f"csrf|{ts_str}|{nonce}"
+        expected_sig = hmac.new(_get_signing_key(), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, expected_sig)
+    except Exception:
+        return False
 
 
 @admin_bp.after_request
@@ -203,8 +275,7 @@ def admin_login():
             status_code = 429
         else:
             submitted_csrf = (request.form.get("csrf_token") or "").strip()
-            expected_csrf = session.get("admin_csrf_token") or ""
-            if not expected_csrf or not hmac.compare_digest(submitted_csrf, expected_csrf):
+            if not _verify_csrf_token(submitted_csrf):
                 error = "Invalid or expired form session. Please try again."
                 status_code = 400
             elif not _is_admin_configured():
@@ -218,15 +289,35 @@ def admin_login():
                 password = request.form.get("password") or ""
                 if _verify_admin_credentials(username, password):
                     _clear_failed_attempts(client_ip)
-                    session.clear()
-                    session.permanent = True
-                    session["is_admin"] = True
-                    session["role"] = "admin"
-                    session["admin_username"] = _get_admin_username()
-                    session["admin_auth_time"] = int(time.time())
-                    session["admin_csrf_token"] = secrets.token_hex(32)
-                    logger.info("Administrator login succeeded for user '%s'", _get_admin_username())
-                    return redirect(url_for("admin.scan_history_dashboard"))
+                    now_ts = int(time.time())
+                    admin_user = _get_admin_username()
+                    try:
+                        session.clear()
+                        session.permanent = True
+                        session["is_admin"] = True
+                        session["role"] = "admin"
+                        session["admin_username"] = admin_user
+                        session["admin_auth_time"] = now_ts
+                    except Exception:
+                        pass
+
+                    resp = make_response(redirect(url_for("admin.scan_history_dashboard")))
+                    is_https = bool(
+                        request.is_secure
+                        or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+                        or current_app.config.get("SESSION_COOKIE_SECURE")
+                    )
+                    resp.set_cookie(
+                        ADMIN_COOKIE_NAME,
+                        _create_admin_cookie_token(admin_user, now_ts),
+                        max_age=ADMIN_SESSION_MAX_AGE_SECONDS,
+                        httponly=True,
+                        samesite="Lax",
+                        secure=is_https,
+                        path="/",
+                    )
+                    logger.info("Administrator login succeeded for user '%s'", admin_user)
+                    return resp
                 else:
                     _record_failed_attempt(client_ip)
                     logger.warning("Failed administrator login attempt from IP %s", client_ip)
@@ -247,8 +338,13 @@ def admin_login():
 
 @admin_bp.route("/admin/logout", methods=["POST", "GET"])
 def admin_logout():
-    session.clear()
-    return redirect(url_for("admin.admin_login"))
+    try:
+        session.clear()
+    except Exception:
+        pass
+    resp = make_response(redirect(url_for("admin.admin_login")))
+    resp.delete_cookie(ADMIN_COOKIE_NAME, path="/")
+    return resp
 
 
 @admin_bp.route("/admin/scan-history", methods=["GET"])
@@ -257,7 +353,7 @@ def scan_history_dashboard():
     csrf_token = _ensure_csrf_token()
     return render_template(
         "admin_scan_history.html",
-        admin_username=session.get("admin_username", "admin"),
+        admin_username=_get_admin_username(),
         csrf_token=csrf_token,
     )
 
