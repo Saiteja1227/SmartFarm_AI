@@ -106,14 +106,15 @@ def get_history(user_id: str, limit: int = 50) -> list:
         "water_stress_level": 1,
         "image_mime": 1,
         "image_base64": 1,
+        "thumbnail_base64": 1,
         "created_at": 1,
     }
     query = {"user_id": user_id, "analysis_status": {"$ne": "Failed"}}
     cursor = db.scans.find(query, projection).sort("created_at", -1).limit(limit)
     items = []
     for doc in cursor:
-        # Thumbnail is first 200 000 chars of base64 (same as original)
-        thumbnail = (doc.get("image_base64") or "")[:200000]
+        # Thumbnail is first 200 000 chars of base64 (or pre-extracted thumbnail_base64)
+        thumbnail = (doc.get("thumbnail_base64") or doc.get("image_base64") or "")[:200000]
         items.append(
             {
                 "id": doc["id"],

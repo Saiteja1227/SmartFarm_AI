@@ -252,6 +252,32 @@ class TestPrivateAdminDashboard(unittest.TestCase):
         self.assertEqual(pdf_res.status_code, 200)
         self.assertTrue(pdf_res.data.startswith(b"%PDF-"))
 
+    def test_5_cross_device_sync_and_live_auto_polling(self):
+        # 1. Verify /api/analyze returns scan_saved=True
+        sharp_bytes = _create_leaf_bytes(blurry=False)
+        res = self.client.post(
+            "/api/analyze",
+            headers={"X-User-Id": "mobile-device-user-99887766"},
+            data={
+                "crop_name": "Tomato",
+                "language": "en",
+                "image": (io.BytesIO(sharp_bytes), "phone_leaf.jpg", "image/jpeg"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertTrue(body.get("scan_saved"), "Expected scan_saved=True in /api/analyze response")
+
+        # 2. Verify Admin Dashboard includes Live Auto-Sync polling UI & script
+        self._login_as_admin()
+        dash_html = self.client.get("/admin/scan-history").get_data(as_text=True)
+        self.assertIn("AUTO_SYNC_INTERVAL_MS = 4000", dash_html)
+        self.assertIn("startAutoSync()", dash_html)
+        self.assertIn("toggleAutoSync()", dash_html)
+        self.assertIn("admin-live-sync-toggle", dash_html)
+
 
 if __name__ == "__main__":
     unittest.main()
+

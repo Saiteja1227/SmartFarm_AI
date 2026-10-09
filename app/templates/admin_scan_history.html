@@ -78,6 +78,29 @@
       object-fit: contain;
       display: block;
     }
+    @keyframes adminPulseDot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    .admin-live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4ade80;
+      display: inline-block;
+      animation: adminPulseDot 1.8s infinite ease-in-out;
+    }
+    .admin-live-dot.paused {
+      background: #9ca3af;
+      animation: none;
+    }
+    @keyframes adminNewRowFlash {
+      0% { background-color: rgba(74, 222, 128, 0.28); }
+      100% { background-color: transparent; }
+    }
+    .admin-new-row-flash {
+      animation: adminNewRowFlash 2.8s ease-out;
+    }
   </style>
 </head>
 <body>
@@ -102,6 +125,14 @@
       </div>
 
       <div class="d-flex align-items-center gap-2">
+        <button type="button"
+                id="admin-live-sync-btn"
+                onclick="toggleAutoSync()"
+                data-testid="admin-live-sync-toggle"
+                class="btn btn-sm btn-outline-light d-flex align-items-center gap-2">
+          <span class="admin-live-dot" id="admin-live-dot"></span>
+          <span id="admin-live-label" class="font-mono" style="font-size:0.75rem">Live Sync: ON</span>
+        </button>
         <button type="button"
                 onclick="loadAdminScans(currentPage)"
                 data-testid="admin-refresh-btn"
@@ -378,6 +409,13 @@
     let currentPage = 1;
     let currentScanDetailId = null;
     let filtersPopulated = false;
+    let autoSyncEnabled = true;
+    let autoSyncTimer = null;
+    let isFetchingScans = false;
+    let knownScanIds = new Set();
+    let hasInitialLoadCompleted = false;
+    let lastRenderSignature = '';
+    const AUTO_SYNC_INTERVAL_MS = 4000;
 
     function escapeHtml(val) {
       return String(val == null ? '' : val)
@@ -456,7 +494,10 @@
       disSel.value = prevDis;
     }
 
-    async function loadAdminScans(page = 1) {
+    async function loadAdminScans(page = 1, options = {}) {
+      const silent = Boolean(options.silent);
+      if (isFetchingScans) return;
+      isFetchingScans = true;
       currentPage = page;
       const params = new URLSearchParams({
         q: document.getElementById('filter-q').value.trim(),
@@ -468,12 +509,14 @@
         date_from: document.getElementById('filter-date-from').value,
         date_to: document.getElementById('filter-date-to').value,
         per_page: document.getElementById('filter-per-page').value,
-        page: String(page)
+        page: String(page),
+        _t: String(Date.now())
       });
 
       try {
         const res = await fetch('/api/admin/scans?' + params.toString(), {
-          headers: { 'Accept': 'application/json' },
+          headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' },
+          cache: 'no-store',
           credentials: 'same-origin'
         });
         if (res.status === 401 || res.status === 403) {
@@ -496,19 +539,47 @@
         document.getElementById('last-updated-label').textContent = 'Updated: ' + new Date().toLocaleTimeString();
 
         populateFilterDropdowns(data.filters);
-        renderScansTable(data.scans || []);
-        renderPagination(data.pagination || { page: 1, per_page: 20, total_items: 0, total_pages: 1 });
+
+        const incomingScans = data.scans || [];
+        const newScanIds = new Set();
+        if (hasInitialLoadCompleted) {
+          incomingScans.forEach(s => {
+            if (s.id && !knownScanIds.has(s.id)) {
+              newScanIds.add(s.id);
+            }
+          });
+        }
+        incomingScans.forEach(s => {
+          if (s.id) knownScanIds.add(s.id);
+        });
+        hasInitialLoadCompleted = true;
+
+        const signature = JSON.stringify({
+          page: currentPage,
+          total: (data.pagination || {}).total_items || 0,
+          ids: incomingScans.map(s => `${s.id}:${s.analysis_status}`)
+        });
+
+        if (!silent || signature !== lastRenderSignature || newScanIds.size > 0) {
+          lastRenderSignature = signature;
+          renderScansTable(incomingScans, newScanIds);
+          renderPagination(data.pagination || { page: 1, per_page: 20, total_items: 0, total_pages: 1 });
+        }
       } catch (err) {
-        document.getElementById('admin-scans-tbody').innerHTML = `
-          <tr>
-            <td colspan="8" class="text-center py-4 text-danger">
-              <i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(err.message)}
-            </td>
-          </tr>`;
+        if (!silent) {
+          document.getElementById('admin-scans-tbody').innerHTML = `
+            <tr>
+              <td colspan="8" class="text-center py-4 text-danger">
+                <i class="bi bi-exclamation-circle me-1"></i>${escapeHtml(err.message)}
+              </td>
+            </tr>`;
+        }
+      } finally {
+        isFetchingScans = false;
       }
     }
 
-    function renderScansTable(scans) {
+    function renderScansTable(scans, newScanIds = new Set()) {
       const tbody = document.getElementById('admin-scans-tbody');
       if (!scans.length) {
         tbody.innerHTML = `
@@ -527,8 +598,9 @@
           ? s.user_id.slice(0, 8) + '…' + s.user_id.slice(-4)
           : (s.user_id || 'anonymous');
         const conf = Number(s.confidence_score || 0);
+        const rowFlashClass = newScanIds.has(s.id) ? 'admin-new-row-flash' : '';
         return `
-          <tr data-testid="admin-scan-row" data-scan-id="${escapeHtml(s.id)}">
+          <tr data-testid="admin-scan-row" data-scan-id="${escapeHtml(s.id)}" class="${rowFlashClass}">
             <td>
               <span class="admin-code-chip" title="${escapeHtml(s.id)}">${escapeHtml(shortId)}</span>
             </td>
@@ -799,8 +871,43 @@
       }
     }
 
+    function startAutoSync() {
+      if (autoSyncTimer) clearInterval(autoSyncTimer);
+      autoSyncTimer = setInterval(() => {
+        if (!autoSyncEnabled || document.hidden) return;
+        loadAdminScans(currentPage, { silent: true });
+      }, AUTO_SYNC_INTERVAL_MS);
+    }
+
+    function toggleAutoSync() {
+      autoSyncEnabled = !autoSyncEnabled;
+      const dot = document.getElementById('admin-live-dot');
+      const label = document.getElementById('admin-live-label');
+      if (autoSyncEnabled) {
+        if (dot) dot.classList.remove('paused');
+        if (label) label.textContent = 'Live Sync: ON';
+        loadAdminScans(currentPage, { silent: true });
+      } else {
+        if (dot) dot.classList.add('paused');
+        if (label) label.textContent = 'Live Sync: PAUSED';
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && autoSyncEnabled) {
+        loadAdminScans(currentPage, { silent: true });
+      }
+    });
+
+    window.addEventListener('focus', () => {
+      if (autoSyncEnabled) {
+        loadAdminScans(currentPage, { silent: true });
+      }
+    });
+
     document.addEventListener('DOMContentLoaded', () => {
       loadAdminScans(1);
+      startAutoSync();
     });
   </script>
 </body>

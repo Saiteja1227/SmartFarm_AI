@@ -113,9 +113,10 @@ def analyze():
 
     try:
         insert_scan(doc)
+        doc["scan_saved"] = True
     except Exception as exc:
-        logger.exception("MongoDB insert failed")
-        return jsonify({"detail": f"Database error: {exc}"}), 500
+        logger.exception("Database insert failed")
+        return jsonify({"detail": f"Database error: {exc}", "scan_saved": False}), 500
 
     return jsonify(doc)
 
