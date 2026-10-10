@@ -180,6 +180,11 @@ class _MemoryCollection:
                 existing = by_id[sid]
                 # Preserve full images if already cached in memory
                 merged = {**rd, **existing}
+                if not self._is_valid_thumb(existing.get("thumbnail_base64") or "") and self._is_valid_thumb(
+                    rd.get("thumbnail_base64") or ""
+                ):
+                    merged["thumbnail_base64"] = rd["thumbnail_base64"]
+                    merged["thumbnail_mime"] = rd.get("thumbnail_mime") or "image/jpeg"
                 if rd.get("_blob_key") and not merged.get("_blob_key"):
                     merged["_blob_key"] = rd["_blob_key"]
                 by_id[sid] = merged
@@ -253,13 +258,16 @@ class _MemoryCollection:
                 sid = d.get("id")
                 if not sid or sid in self._deleted_ids:
                     continue
-                thumb = d.get("thumbnail_base64") or (d.get("image_base64") or "")[:60000]
+                self._ensure_valid_thumbnail(d)
+                thumb = d.get("thumbnail_base64") or ""
                 entry = {
                     k: v
                     for k, v in d.items()
                     if k not in ("image_base64", "enhanced_image_base64")
                 }
                 entry["thumbnail_base64"] = thumb
+                if d.get("thumbnail_mime"):
+                    entry["thumbnail_mime"] = d["thumbnail_mime"]
                 entry["has_original_image"] = bool(
                     d.get("has_original_image") or d.get("image_base64") or d.get("_blob_key")
                 )
@@ -294,6 +302,62 @@ class _MemoryCollection:
         except Exception:
             self._save_to_disk()
 
+    @staticmethod
+    def _is_valid_thumb(b64_str: str) -> bool:
+        if not b64_str or len(b64_str) in (60000, 200000):
+            return False
+        try:
+            import base64
+            import io
+            from PIL import Image
+
+            raw = base64.b64decode(b64_str)
+            with Image.open(io.BytesIO(raw)) as img:
+                img.load()
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def _make_jpeg_thumb(cls, b64_str: str) -> str:
+        if not b64_str:
+            return ""
+        try:
+            import base64
+            import io
+            from PIL import Image, ImageFile, ImageOps
+
+            raw = base64.b64decode(b64_str)
+            prev = ImageFile.LOAD_TRUNCATED_IMAGES
+            ImageFile.LOAD_TRUNCATED_IMAGES = True
+            try:
+                with Image.open(io.BytesIO(raw)) as img:
+                    img = ImageOps.exif_transpose(img)
+                    rgb = img.convert("RGB")
+                    rgb.thumbnail((480, 360), Image.Resampling.LANCZOS)
+                    buf = io.BytesIO()
+                    rgb.save(buf, format="JPEG", quality=85, optimize=True)
+                    return base64.b64encode(buf.getvalue()).decode("utf-8")
+            finally:
+                ImageFile.LOAD_TRUNCATED_IMAGES = prev
+        except Exception:
+            return b64_str if cls._is_valid_thumb(b64_str) else ""
+
+    def _ensure_valid_thumbnail(self, doc: dict) -> None:
+        thumb = doc.get("thumbnail_base64") or ""
+        if self._is_valid_thumb(thumb):
+            return
+        src = doc.get("enhanced_image_base64") or doc.get("image_base64") or ""
+        if not src and doc.get("_blob_key"):
+            self._hydrate_doc_blob(doc)
+            src = doc.get("enhanced_image_base64") or doc.get("image_base64") or ""
+        rebuilt = self._make_jpeg_thumb(src or thumb)
+        if rebuilt:
+            doc["thumbnail_base64"] = rebuilt
+            doc["thumbnail_mime"] = "image/jpeg"
+        else:
+            doc["thumbnail_base64"] = ""
+
     def _hydrate_doc_blob(self, doc: dict) -> dict:
         """Fetch full image_base64 / enhanced_image_base64 from cloud blob when needed."""
         if not self._enable_persistence:
@@ -304,7 +368,7 @@ class _MemoryCollection:
                 r = requests.get(
                     f"{CLOUD_BLOB_BASE}/{blob_key}",
                     headers={"User-Agent": "SmartFarmAI/2.0"},
-                    timeout=4.0,
+                    timeout=10.0,
                 )
                 if r.status_code == 200:
                     full_doc = r.json()
@@ -319,8 +383,7 @@ class _MemoryCollection:
     def insert_one(self, doc):
         with self._lock:
             doc_copy = dict(doc)
-            if doc_copy.get("image_base64") and not doc_copy.get("thumbnail_base64"):
-                doc_copy["thumbnail_base64"] = doc_copy["image_base64"][:60000]
+            self._ensure_valid_thumbnail(doc_copy)
             sid = doc_copy.get("id")
             self._docs = [d for d in self._docs if d.get("id") != sid]
             self._docs.insert(0, doc_copy)
@@ -332,6 +395,16 @@ class _MemoryCollection:
             self._sync_from_cloud()
             query = query or {}
             docs = [doc for doc in self._docs if _matches_query(doc, query)]
+            want_thumb = not projection or projection.get("thumbnail_base64")
+            if want_thumb:
+                dirty = False
+                for d in docs:
+                    old_th = d.get("thumbnail_base64")
+                    self._ensure_valid_thumbnail(d)
+                    if d.get("thumbnail_base64") != old_th:
+                        dirty = True
+                if dirty:
+                    self._save_to_disk()
             return _MemoryCursor(docs, projection)
 
     def find_one(self, query=None, projection=None):

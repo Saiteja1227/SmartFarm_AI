@@ -1,13 +1,64 @@
 """Scan data model helpers — creation, serialisation, and MongoDB I/O."""
+import base64
+import io
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+
+from PIL import Image, ImageOps
 
 from app.extensions import get_db
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_valid_image_base64(b64_str: Optional[str]) -> bool:
+    """Return True only if b64_str decodes into a complete, non-truncated image."""
+    if not b64_str or not isinstance(b64_str, str):
+        return False
+    # Old buggy code sliced base64 strings at exact 60000 or 200000 chars
+    if len(b64_str) in (60000, 200000):
+        return False
+    try:
+        raw = base64.b64decode(b64_str)
+        with Image.open(io.BytesIO(raw)) as img:
+            img.load()
+        return True
+    except Exception:
+        return False
+
+
+def make_thumbnail_base64(
+    image_base64: Optional[str],
+    max_size: tuple = (480, 360),
+    quality: int = 85,
+) -> Optional[str]:
+    """
+    Create a valid, complete resized JPEG thumbnail encoded as base64.
+    Never slices base64 strings (which corrupts JPEG/PNG/WEBP binaries).
+    """
+    if not image_base64:
+        return None
+    try:
+        from PIL import ImageFile
+
+        raw = base64.b64decode(image_base64)
+        prev = ImageFile.LOAD_TRUNCATED_IMAGES
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        try:
+            with Image.open(io.BytesIO(raw)) as img:
+                img = ImageOps.exif_transpose(img)
+                rgb = img.convert("RGB")
+                rgb.thumbnail(max_size, Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+                return base64.b64encode(buf.getvalue()).decode("utf-8")
+        finally:
+            ImageFile.LOAD_TRUNCATED_IMAGES = prev
+    except Exception:
+        return image_base64 if is_valid_image_base64(image_base64) else None
 
 
 def make_scan_doc(
@@ -21,6 +72,9 @@ def make_scan_doc(
     user_type: str = "anonymous",
 ) -> dict:
     """Build a new scan document ready for MongoDB insertion."""
+    enh_b64 = ai_result.get("enhanced_image_base64")
+    source_for_thumb = enh_b64 if enh_b64 else image_base64
+    thumb_b64 = make_thumbnail_base64(source_for_thumb) or image_base64
     return {
         "id": str(uuid.uuid4()),
         "user_id": user_id,
@@ -29,6 +83,8 @@ def make_scan_doc(
         "language": language,
         "image_base64": image_base64,
         "image_mime": image_mime,
+        "thumbnail_base64": thumb_b64,
+        "thumbnail_mime": "image/jpeg" if thumb_b64 != image_base64 else image_mime,
         "analysis_status": analysis_status,
         "plant_health_status": ai_result.get("plant_health_status", "Uncertain"),
         "predicted_disease": ai_result.get("predicted_disease", "Unknown"),
@@ -45,7 +101,7 @@ def make_scan_doc(
         "enhancement_status": ai_result.get("enhancement_status", "not_needed"),
         "blur_score": ai_result.get("blur_score"),
         "enhanced_blur_score": ai_result.get("enhanced_blur_score"),
-        "enhanced_image_base64": ai_result.get("enhanced_image_base64"),
+        "enhanced_image_base64": enh_b64,
         "enhanced_image_mime": ai_result.get("enhanced_image_mime") or "image/jpeg",
         "created_at": _utcnow_iso(),
     }
@@ -105,7 +161,9 @@ def get_history(user_id: str, limit: int = 50) -> list:
         "confidence_score": 1,
         "water_stress_level": 1,
         "image_mime": 1,
+        "thumbnail_mime": 1,
         "image_base64": 1,
+        "enhanced_image_base64": 1,
         "thumbnail_base64": 1,
         "created_at": 1,
     }
@@ -113,8 +171,22 @@ def get_history(user_id: str, limit: int = 50) -> list:
     cursor = db.scans.find(query, projection).sort("created_at", -1).limit(limit)
     items = []
     for doc in cursor:
-        # Thumbnail is first 200 000 chars of base64 (or pre-extracted thumbnail_base64)
-        thumbnail = (doc.get("thumbnail_base64") or doc.get("image_base64") or "")[:200000]
+        thumb = doc.get("thumbnail_base64") or ""
+        thumb_mime = doc.get("thumbnail_mime") or doc.get("image_mime") or "image/jpeg"
+
+        # If thumbnail is missing or was truncated by legacy base64 slicing, build a real JPEG thumbnail
+        if not is_valid_image_base64(thumb):
+            full_src = doc.get("enhanced_image_base64") or doc.get("image_base64") or thumb
+            repaired = make_thumbnail_base64(full_src)
+            if repaired:
+                thumb = repaired
+                thumb_mime = "image/jpeg"
+            elif is_valid_image_base64(doc.get("image_base64")):
+                thumb = doc["image_base64"]
+                thumb_mime = doc.get("image_mime", "image/jpeg")
+            else:
+                thumb = ""
+
         items.append(
             {
                 "id": doc["id"],
@@ -123,8 +195,9 @@ def get_history(user_id: str, limit: int = 50) -> list:
                 "predicted_disease": doc.get("predicted_disease", "Unknown"),
                 "confidence_score": int(doc.get("confidence_score", 0)),
                 "water_stress_level": doc.get("water_stress_level", "Low"),
-                "image_mime": doc.get("image_mime", "image/jpeg"),
-                "thumbnail_base64": thumbnail,
+                "image_mime": thumb_mime,
+                "thumbnail_mime": thumb_mime,
+                "thumbnail_base64": thumb,
                 "created_at": doc.get("created_at", ""),
             }
         )

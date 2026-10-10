@@ -20,8 +20,9 @@
 
     const statusCls = STATUS_CLASS[item.plant_health_status] || STATUS_CLASS.Uncertain;
     const date = item.created_at ? new Date(item.created_at).toLocaleDateString() : '';
+    const mime = item.thumbnail_mime || item.image_mime || 'image/jpeg';
     const thumb = item.thumbnail_base64
-      ? `<img src="data:${item.image_mime};base64,${item.thumbnail_base64}" alt="${item.predicted_disease}" class="w-100 h-100 object-fit-cover" />`
+      ? `<img src="data:${mime};base64,${item.thumbnail_base64}" alt="${item.predicted_disease}" class="w-100 h-100 object-fit-cover" onerror="window.handleHistoryThumbError(this, '${item.id}')" />`
       : `<div class="w-100 h-100 d-flex align-items-center justify-content-center"><i class="bi bi-leaf fs-3 text-muted"></i></div>`;
 
     return `
@@ -105,6 +106,29 @@
       window.downloadReportPdf(full);
     } catch (err) {
       window.sfApp.showToast(t('history.toast.pdfFail'), 'error');
+    }
+  };
+
+  window.handleHistoryThumbError = async function (imgEl, id) {
+    if (!imgEl || imgEl.dataset.retried) {
+      if (imgEl && imgEl.parentElement) {
+        const span = imgEl.parentElement.querySelector('.sf-badge');
+        imgEl.outerHTML = '<div class="w-100 h-100 d-flex align-items-center justify-content-center"><i class="bi bi-leaf fs-3 text-muted"></i></div>';
+      }
+      return;
+    }
+    imgEl.dataset.retried = '1';
+    try {
+      const full = await window.sfApi.fetchScan(id);
+      const b64 = (full && (full.enhanced_image_base64 || full.image_base64)) || '';
+      const mime = (full && (full.enhanced_image_base64 ? full.enhanced_image_mime : full.image_mime)) || 'image/jpeg';
+      if (b64) {
+        imgEl.src = 'data:' + mime + ';base64,' + b64;
+        return;
+      }
+    } catch (e) {}
+    if (imgEl && imgEl.parentElement) {
+      imgEl.outerHTML = '<div class="w-100 h-100 d-flex align-items-center justify-content-center"><i class="bi bi-leaf fs-3 text-muted"></i></div>';
     }
   };
 

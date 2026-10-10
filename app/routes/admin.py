@@ -463,8 +463,12 @@ def api_admin_scan_image(scan_id):
         b64_data = doc.get("enhanced_image_base64")
         mime = doc.get("enhanced_image_mime") or "image/jpeg"
     else:
-        b64_data = doc.get("image_base64")
-        mime = doc.get("image_mime") or "image/jpeg"
+        b64_data = doc.get("image_base64") or doc.get("thumbnail_base64")
+        mime = (
+            doc.get("image_mime")
+            if doc.get("image_base64")
+            else (doc.get("thumbnail_mime") or doc.get("image_mime"))
+        ) or "image/jpeg"
 
     if not b64_data:
         return jsonify({"detail": "Requested image not available for this scan."}), 404
