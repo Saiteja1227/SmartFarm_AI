@@ -573,12 +573,24 @@ def detect_disease_symptoms(image_array: np.ndarray) -> dict:
 def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
     """
     Analyze plant leaf image using two-stage rule-based image analysis.
+    Pre-Stage: Validate that the uploaded image contains a valid leaf or plant.
     Stage 0: Blurry image detection & CV enhancement (when blurry)
     Stage 1: Plant Health Classification (Healthy/Unhealthy)
     Stage 2: If Unhealthy, predict disease type
     Water stress analysis is independent from disease analysis.
     Confidence validation: <70% = Uncertain Result - Manual Verification Recommended.
     """
+    from app.services.plant_validator import (
+        InvalidPlantImageError,
+        VALIDATION_ERROR_MESSAGE,
+        validate_leaf_or_plant_b64,
+    )
+
+    validation = validate_leaf_or_plant_b64(img_b64)
+    if not validation["is_valid_plant"]:
+        msg = validation["message"] if validation["status"] == "corrupted" else VALIDATION_ERROR_MESSAGE
+        raise InvalidPlantImageError(msg, validation=validation)
+
     enh_info = detect_and_enhance_blurry_image(img_b64)
     analysis_b64 = (
         enh_info["enhanced_image_base64"]
@@ -592,6 +604,10 @@ def analyze_with_cnn(img_b64: str, crop_hint: str, language_code: str) -> dict:
         
         # STAGE 1 & 2: Disease detection (two-stage pipeline)
         disease_result = detect_disease_symptoms(image_array)
+        if enh_info.get("image_enhanced") and disease_result["health_status"] == "Uncertain":
+            orig_result = detect_disease_symptoms(preprocess_image(img_b64))
+            if orig_result["confidence"] > disease_result["confidence"]:
+                disease_result = orig_result
         health_status = disease_result["health_status"]
         disease_name = disease_result["disease_name"]
         confidence = disease_result["confidence"]

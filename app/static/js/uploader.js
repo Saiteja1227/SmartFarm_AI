@@ -69,8 +69,20 @@
     });
   }
 
+  function hidePreviousReport() {
+    if (window.sfApp && window.sfApp.stopSpeaking) {
+      window.sfApp.stopSpeaking();
+    }
+    window._currentRawReport = null;
+    const reportSection = document.getElementById('report-section');
+    if (reportSection) reportSection.classList.add('d-none');
+    const reportContainer = document.getElementById('report-container');
+    if (reportContainer) reportContainer.innerHTML = '';
+  }
+
   async function setFile(file) {
     clearError();
+    hidePreviousReport();
     if (!file) return;
     if (!ACCEPTED_MIME.includes(file.type)) { showError(t('uploader.err.formats'), 'uploader.err.formats'); return; }
     if (file.size > MAX_BYTES) { showError(t('uploader.err.tooLarge'), 'uploader.err.tooLarge'); return; }
@@ -97,9 +109,7 @@
     document.getElementById('drop-preview').classList.add('d-none');
     document.getElementById('analyze-btn').disabled = true;
     clearError();
-    // Hide report
-    const reportSection = document.getElementById('report-section');
-    if (reportSection) reportSection.classList.add('d-none');
+    hidePreviousReport();
   };
 
   window.handleAnalyze = async function () {
@@ -109,7 +119,8 @@
     const lang = window.i18n ? window.i18n.getLang() : 'en';
     const crop = (document.getElementById('crop-input') || {}).value || '';
 
-    // Show scanning overlay
+    // Show scanning overlay and clear any previous report
+    hidePreviousReport();
     const overlay = document.getElementById('scan-overlay');
     if (overlay) overlay.classList.remove('d-none');
     const btn = document.getElementById('analyze-btn');
@@ -132,8 +143,10 @@
         setTimeout(() => reportSection.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
       }
     } catch (err) {
-      showError(err.message || t('uploader.err.generic'), 'uploader.err.generic');
-      window.sfApp.showToast(t('uploader.err.generic'), 'error');
+      hidePreviousReport();
+      const errMsg = (err && err.message) ? err.message : t('uploader.err.generic');
+      showError(errMsg, (err && err.message) ? null : 'uploader.err.generic');
+      window.sfApp.showToast(errMsg, 'error');
     } finally {
       _isAnalyzing = false;
       if (overlay) overlay.classList.add('d-none');

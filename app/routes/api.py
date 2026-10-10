@@ -15,6 +15,11 @@ from app.models.scan import (
     make_scan_doc,
 )
 from app.services.ai_service import SUPPORTED_LANGUAGES, analyze_image
+from app.services.plant_validator import (
+    InvalidPlantImageError,
+    VALIDATION_ERROR_MESSAGE,
+    validate_leaf_or_plant_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,13 +75,36 @@ def analyze():
     raw_bytes = image_file.read()
     mime = (image_file.content_type or "").lower()
 
-    # Validate
+    # Validate file type and size
     if mime not in ALLOWED_MIME:
         return jsonify({"detail": "Only JPEG, PNG, or WEBP images are accepted."}), 400
     if not raw_bytes:
         return jsonify({"detail": "Empty image upload."}), 400
     if len(raw_bytes) > MAX_BYTES:
         return jsonify({"detail": "Image too large (max 8MB)."}), 400
+
+    # Validate image integrity and confirm it contains a leaf or plant BEFORE analysis
+    validation = validate_leaf_or_plant_image(raw_bytes)
+    if validation["status"] == "corrupted":
+        return jsonify({
+            "detail": validation["message"],
+            "message": validation["message"],
+            "is_plant_image": False,
+            "validation_status": "corrupted",
+            "validation_reason": validation["reason"],
+            "scan_saved": False,
+        }), 400
+
+    if not validation["is_valid_plant"]:
+        return jsonify({
+            "detail": VALIDATION_ERROR_MESSAGE,
+            "message": VALIDATION_ERROR_MESSAGE,
+            "is_plant_image": False,
+            "validation_status": validation["status"],
+            "validation_reason": validation["reason"],
+            "guidance": validation.get("guidance", VALIDATION_ERROR_MESSAGE),
+            "scan_saved": False,
+        }), 400
 
     crop_name = (request.form.get("crop_name") or "").strip()
     language = (request.form.get("language") or "en").lower()
@@ -87,6 +115,15 @@ def analyze():
 
     try:
         ai_result = analyze_image(img_b64, crop_name, language)
+    except InvalidPlantImageError as exc:
+        return jsonify({
+            "detail": VALIDATION_ERROR_MESSAGE,
+            "message": VALIDATION_ERROR_MESSAGE,
+            "is_plant_image": False,
+            "validation_status": exc.validation.get("status", "invalid_non_plant"),
+            "validation_reason": exc.validation.get("reason", ""),
+            "scan_saved": False,
+        }), 400
     except RuntimeError as exc:
         try:
             insert_scan(

@@ -157,6 +157,8 @@ def analyze_image(img_b64: str, crop_hint: str, language_code: str) -> dict:
     Analyze plant leaf image using CNN models for disease detection and water stress estimation.
     Returns structured analysis with recommendations.
     """
+    from app.services.plant_validator import InvalidPlantImageError
+
     try:
         from app.services.cnn_analysis import analyze_with_cnn
     except ImportError as exc:
@@ -166,12 +168,14 @@ def analyze_image(img_b64: str, crop_hint: str, language_code: str) -> dict:
         ) from exc
 
     try:
-        # Use CNN analysis
+        # Use CNN analysis (validates leaf/plant image before running analysis)
         result = analyze_with_cnn(img_b64, crop_hint, language_code)
         if language_code and language_code != "en":
             from app.translations import translate_report
             result = translate_report(result, language_code)
         return result
+    except InvalidPlantImageError:
+        raise
     except Exception as exc:
         logger.exception("CNN analysis failed, using fallback")
         # Return fallback response on error
